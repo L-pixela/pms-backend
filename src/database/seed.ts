@@ -1,21 +1,29 @@
 import 'reflect-metadata';
-import { AppDataSource } from './data-source';
+import * as bcrypt from 'bcrypt';
+import type { QueryRunner } from 'typeorm';
+import { AppDataSource, env } from './data-source';
 import { RoleEntity, RoleScope } from '../modules/shared/entities/role.entity';
 import { PermissionEntity } from '../modules/shared/entities/permission.entity';
 import { RolePermissionEntity } from '../modules/shared/entities/role-permission.entity';
 import { GlobalRole } from '../modules/shared/enums/global-role.enum';
 import { OrganizationRole } from '../modules/shared/enums/organization-role.enum';
 import { Permissions } from '../modules/shared/constants/permissions';
+import { UserEntity } from '../modules/users/entities/user.entity';
+import { UserGlobalRoleEntity } from '../modules/users/entities/user-global-role.entity';
+
+const BCRYPT_COST = 12;
 
 async function seed() {
-  await AppDataSource.initialize();
-  console.log('🌱 Starting database seed...');
-
-  const queryRunner = AppDataSource.createQueryRunner();
-  await queryRunner.connect();
-  await queryRunner.startTransaction();
+  let queryRunner: QueryRunner | undefined;
 
   try {
+    await AppDataSource.initialize();
+    console.log('🌱 Starting database seed...');
+
+    queryRunner = AppDataSource.createQueryRunner();
+    await queryRunner.connect();
+    await queryRunner.startTransaction();
+
     const roleRepo = queryRunner.manager.getRepository(RoleEntity);
     const permRepo = queryRunner.manager.getRepository(PermissionEntity);
     const rolePermRepo =
@@ -151,16 +159,58 @@ async function seed() {
       }
     }
 
+    // 4. Seed the platform admin user (optional)
+    if (env.SEED_ADMIN_EMAIL && env.SEED_ADMIN_PASSWORD) {
+      console.log('Seeding platform admin user...');
+      const userRepo = queryRunner.manager.getRepository(UserEntity);
+      const userRoleRepo =
+        queryRunner.manager.getRepository(UserGlobalRoleEntity);
+      const email = env.SEED_ADMIN_EMAIL.trim().toLowerCase();
+
+      let admin = await userRepo.findOne({ where: { email } });
+      if (!admin) {
+        admin = await userRepo.save(
+          userRepo.create({
+            email,
+            passwordHash: await bcrypt.hash(
+              env.SEED_ADMIN_PASSWORD,
+              BCRYPT_COST,
+            ),
+            isActive: true,
+          }),
+        );
+      }
+
+      const exists = await userRoleRepo.findOne({
+        where: { userId: admin.id, roleId: adminRole.id },
+      });
+      if (!exists) {
+        await userRoleRepo.save(
+          userRoleRepo.create({ userId: admin.id, roleId: adminRole.id }),
+        );
+      }
+    } else {
+      console.log(
+        'Skipping platform admin user (SEED_ADMIN_EMAIL / SEED_ADMIN_PASSWORD not set).',
+      );
+    }
+
     await queryRunner.commitTransaction();
     console.log('✅ Seed completed successfully!');
   } catch (err) {
-    console.error('❌ Seed failed:', err);
-    await queryRunner.rollbackTransaction();
-    process.exit(1);
+    if (queryRunner?.isTransactionActive) {
+      await queryRunner.rollbackTransaction();
+    }
+    throw err;
   } finally {
-    await queryRunner.release();
-    await AppDataSource.destroy();
+    await queryRunner?.release();
+    if (AppDataSource.isInitialized) {
+      await AppDataSource.destroy();
+    }
   }
 }
 
-seed();
+seed().catch((err) => {
+  console.error('❌ Seed failed:', err);
+  process.exitCode = 1;
+});
