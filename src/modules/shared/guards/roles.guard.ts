@@ -1,6 +1,7 @@
 import {
   CanActivate,
   ExecutionContext,
+  ForbiddenException,
   Injectable,
   UnauthorizedException,
 } from '@nestjs/common';
@@ -9,7 +10,7 @@ import {
   REQUIRED_ROLES_KEY,
   RoleRequirements,
 } from '../decorators/require-roles.decorator';
-import type { AuthenticatedUser } from '../interfaces/authenticated-user.interface';
+import type { AuthenticatedRequest } from '../interfaces/authenticated-request.interface';
 
 @Injectable()
 export class RolesGuard implements CanActivate {
@@ -25,8 +26,8 @@ export class RolesGuard implements CanActivate {
       return true;
     }
 
-    const request = context.switchToHttp().getRequest();
-    const user = request.user as AuthenticatedUser | undefined;
+    const request = context.switchToHttp().getRequest<AuthenticatedRequest>();
+    const { user } = request;
 
     if (!user) {
       throw new UnauthorizedException('Authentication is required.');
@@ -43,19 +44,25 @@ export class RolesGuard implements CanActivate {
     }
 
     if (requirements.organization?.length) {
-      const headerValue = request.headers['x-organization-id'];
-      const organizationIdFromHeader = Array.isArray(headerValue)
-        ? headerValue[0]
-        : headerValue;
-      const organizationId =
-        organizationIdFromHeader ?? request.params?.organizationId;
+      const organizationId = this.resolveOrganizationId(request);
 
       if (!organizationId) {
         return false;
       }
 
-      const userOrganizationRoles =
-        user.organizationRoles[organizationId] ?? [];
+      // The id comes from the client, so never let it resolve to an
+      // inherited key such as "constructor" or "__proto__".
+      const userOrganizationRoles = Object.hasOwn(
+        user.organizationRoles,
+        organizationId,
+      )
+        ? user.organizationRoles[organizationId]
+        : undefined;
+
+      if (!Array.isArray(userOrganizationRoles)) {
+        return false;
+      }
+
       const hasOrganizationRole = requirements.organization.some((role) =>
         userOrganizationRoles.includes(role),
       );
@@ -66,5 +73,38 @@ export class RolesGuard implements CanActivate {
     }
 
     return true;
+  }
+
+  /**
+   * The `:organizationId` route param is the org the handler acts on, so it is
+   * authoritative. The `x-organization-id` header is only a fallback for routes
+   * without that param, and must agree with it when both are sent.
+   */
+  private resolveOrganizationId(
+    request: AuthenticatedRequest,
+  ): string | undefined {
+    const organizationIdFromHeader = this.firstValue(
+      request.headers['x-organization-id'],
+    );
+    const organizationIdFromParam = this.firstValue(
+      request.params?.organizationId,
+    );
+
+    if (!organizationIdFromParam) {
+      return organizationIdFromHeader;
+    }
+
+    if (
+      organizationIdFromHeader !== undefined &&
+      organizationIdFromHeader !== organizationIdFromParam
+    ) {
+      throw new ForbiddenException('Organization context mismatch.');
+    }
+
+    return organizationIdFromParam;
+  }
+
+  private firstValue(value: string | string[] | undefined): string | undefined {
+    return Array.isArray(value) ? value[0] : value;
   }
 }
