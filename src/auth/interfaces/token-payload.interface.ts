@@ -10,12 +10,12 @@ export interface AccessTokenPayload {
   tokenType: 'access';
 }
 
+/**
+ * Carries no privileges: roles and permissions are reloaded from the
+ * database on every refresh.
+ */
 export interface RefreshTokenPayload {
   sub: string;
-  email: string;
-  globalRoles: GlobalRole[];
-  organizationRoles: Record<string, OrganizationRole[]>;
-  permissions: string[];
   tokenType: 'refresh';
   sessionId: string;
 }
