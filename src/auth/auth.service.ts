@@ -38,25 +38,7 @@ export class AuthService {
   }
 
   async refresh({ refreshToken }: RefreshTokenDto): Promise<AuthTokenResponse> {
-    const jwtRefreshSecret =
-      this.configService.getOrThrow<string>('JWT_REFRESH_SECRET');
-
-    let payload: RefreshTokenPayload;
-
-    try {
-      payload = await this.jwtService.verifyAsync<RefreshTokenPayload>(
-        refreshToken,
-        {
-          secret: jwtRefreshSecret,
-        },
-      );
-    } catch {
-      throw new UnauthorizedException('Refresh token is invalid or expired.');
-    }
-
-    if (payload.tokenType !== 'refresh') {
-      throw new UnauthorizedException('Provided token is not a refresh token.');
-    }
+    const payload = await this.verifyRefreshToken(refreshToken);
 
     const activeSessionUserId = this.refreshSessions.get(payload.sessionId);
     if (!activeSessionUserId || activeSessionUserId !== payload.sub) {
@@ -76,19 +58,34 @@ export class AuthService {
   }
 
   async logout({ refreshToken }: RefreshTokenDto): Promise<{ success: true }> {
-    const jwtRefreshSecret =
-      this.configService.getOrThrow<string>('JWT_REFRESH_SECRET');
-
-    const payload = await this.jwtService.verifyAsync<RefreshTokenPayload>(
-      refreshToken,
-      {
-        secret: jwtRefreshSecret,
-      },
-    );
+    const payload = await this.verifyRefreshToken(refreshToken);
 
     this.refreshSessions.delete(payload.sessionId);
 
     return { success: true };
+  }
+
+  private async verifyRefreshToken(
+    refreshToken: string,
+  ): Promise<RefreshTokenPayload> {
+    let payload: RefreshTokenPayload;
+
+    try {
+      payload = await this.jwtService.verifyAsync<RefreshTokenPayload>(
+        refreshToken,
+        {
+          secret: this.configService.getOrThrow<string>('JWT_REFRESH_SECRET'),
+        },
+      );
+    } catch {
+      throw new UnauthorizedException('Refresh token is invalid or expired.');
+    }
+
+    if (payload.tokenType !== 'refresh') {
+      throw new UnauthorizedException('Provided token is not a refresh token.');
+    }
+
+    return payload;
   }
 
   private async issueTokenPair(
