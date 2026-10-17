@@ -8,13 +8,10 @@ import type { AuthenticatedUser } from '../../modules/shared/interfaces/authenti
 @Injectable()
 export class JwtStrategy extends PassportStrategy(Strategy) {
   constructor(configService: ConfigService) {
-    const jwtAccessSecret =
-      configService.get<string>('JWT_ACCESS_SECRET') ?? 'dev_access_secret';
-
     super({
       jwtFromRequest: ExtractJwt.fromAuthHeaderAsBearerToken(),
       ignoreExpiration: false,
-      secretOrKey: jwtAccessSecret,
+      secretOrKey: configService.getOrThrow<string>('JWT_ACCESS_SECRET'),
     });
   }
 

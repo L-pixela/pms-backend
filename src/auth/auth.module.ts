@@ -13,22 +13,14 @@ import { JwtStrategy } from './strategies/jwt.strategy';
     JwtModule.registerAsync({
       imports: [ConfigModule],
       inject: [ConfigService],
-      useFactory: (configService: ConfigService) => {
-        const jwtAccessExpiresInSeconds = Number(
-          configService.get<string>('JWT_ACCESS_EXPIRES_IN_SECONDS') ?? 900,
-        );
-
-        return {
-          secret:
-            configService.get<string>('JWT_ACCESS_SECRET') ??
-            'dev_access_secret',
-          signOptions: {
-            expiresIn: Number.isFinite(jwtAccessExpiresInSeconds)
-              ? jwtAccessExpiresInSeconds
-              : 900,
-          },
-        };
-      },
+      useFactory: (configService: ConfigService) => ({
+        secret: configService.getOrThrow<string>('JWT_ACCESS_SECRET'),
+        signOptions: {
+          expiresIn: configService.getOrThrow<number>(
+            'JWT_ACCESS_EXPIRES_IN_SECONDS',
+          ),
+        },
+      }),
     }),
   ],
   controllers: [AuthController],

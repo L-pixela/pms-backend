@@ -5,17 +5,20 @@ import { DataSource } from 'typeorm';
 // Load .env so this file works standalone (TypeORM CLI, seed scripts)
 config();
 
+import { validate } from '../config/env.validation';
 import { ALL_ENTITIES } from './entities';
+
+export const env = validate(process.env);
 
 export const AppDataSource = new DataSource({
   type: 'postgres',
-  host: process.env.DB_HOST ?? 'localhost',
-  port: Number(process.env.DB_PORT ?? 5432),
-  username: process.env.DB_USERNAME ?? 'rental_user',
-  password: process.env.DB_PASSWORD ?? 'rental_pass',
-  database: process.env.DB_NAME ?? 'rental_db',
+  host: env.DB_HOST,
+  port: env.DB_PORT,
+  username: env.DB_USERNAME,
+  password: env.DB_PASSWORD,
+  database: env.DB_NAME,
   synchronize: false,
-  logging: process.env.NODE_ENV !== 'production',
+  logging: env.NODE_ENV !== 'production',
   entities: ALL_ENTITIES,
   migrations: ['src/database/migrations/*.ts'],
 });

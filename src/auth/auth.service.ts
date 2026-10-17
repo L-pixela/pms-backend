@@ -39,8 +39,7 @@ export class AuthService {
 
   async refresh({ refreshToken }: RefreshTokenDto): Promise<AuthTokenResponse> {
     const jwtRefreshSecret =
-      this.configService.get<string>('JWT_REFRESH_SECRET') ??
-      'dev_refresh_secret';
+      this.configService.getOrThrow<string>('JWT_REFRESH_SECRET');
 
     let payload: RefreshTokenPayload;
 
@@ -78,8 +77,7 @@ export class AuthService {
 
   async logout({ refreshToken }: RefreshTokenDto): Promise<{ success: true }> {
     const jwtRefreshSecret =
-      this.configService.get<string>('JWT_REFRESH_SECRET') ??
-      'dev_refresh_secret';
+      this.configService.getOrThrow<string>('JWT_REFRESH_SECRET');
 
     const payload = await this.jwtService.verifyAsync<RefreshTokenPayload>(
       refreshToken,
@@ -96,16 +94,11 @@ export class AuthService {
   private async issueTokenPair(
     accessPayload: AccessTokenPayload,
   ): Promise<AuthTokenResponse> {
-    const accessTokenExpiresIn = Number(
-      this.configService.get<string>('JWT_ACCESS_EXPIRES_IN_SECONDS') ?? 900,
-    );
-    const refreshTokenExpiresIn = Number(
-      this.configService.get<string>('JWT_REFRESH_EXPIRES_IN_SECONDS') ??
-        604800,
+    const refreshTokenExpiresIn = this.configService.getOrThrow<number>(
+      'JWT_REFRESH_EXPIRES_IN_SECONDS',
     );
     const jwtRefreshSecret =
-      this.configService.get<string>('JWT_REFRESH_SECRET') ??
-      'dev_refresh_secret';
+      this.configService.getOrThrow<string>('JWT_REFRESH_SECRET');
 
     const sessionId = randomUUID();
     this.refreshSessions.set(sessionId, accessPayload.sub);
@@ -121,16 +114,10 @@ export class AuthService {
     };
 
     const [accessToken, refreshToken] = await Promise.all([
-      this.jwtService.signAsync(accessPayload, {
-        expiresIn: Number.isFinite(accessTokenExpiresIn)
-          ? accessTokenExpiresIn
-          : 900,
-      }),
+      this.jwtService.signAsync(accessPayload),
       this.jwtService.signAsync(refreshPayload, {
         secret: jwtRefreshSecret,
-        expiresIn: Number.isFinite(refreshTokenExpiresIn)
-          ? refreshTokenExpiresIn
-          : 604800,
+        expiresIn: refreshTokenExpiresIn,
       }),
     ]);
 
