@@ -2,7 +2,7 @@
 
 Multi-tenant property rental management REST API. Organizations (landlords and property management companies) manage properties, leases and payments. Users belong to organizations and hold roles scoped to each organization.
 
-This is an early-stage project. Only auth and a stub users module exist. The roadmap is in `IMPLEMENTATION_PLAN.md` (Phases 0–8) and progress is tracked in `TRACKING.md`. Read both before starting a new feature.
+This is an early-stage project. Only auth (DB-backed) and a stub users module exist. The roadmap is in `IMPLEMENTATION_PLAN.md` (Phases 0–8) and progress is tracked in `TRACKING.md`. Read both before starting a new feature.
 
 ## Stack
 
@@ -17,11 +17,12 @@ This is an early-stage project. Only auth and a stub users module exist. The roa
 ## Setup and commands
 
 ```bash
-cp .env.example .env          # JWT secrets, token TTLs, DB credentials
+cp .env.example .env          # JWT secrets, token TTLs, DB credentials, seed admin
 docker compose up -d          # postgres:16 on 5432, pgAdmin on http://localhost:5050 (admin@local.dev / admin)
 npm install
-npm run migration:run         # see Known errors #8: no migrations exist yet
-npm run seed                  # seeds roles, permissions and the role→permission mapping
+npm run migration:run         # creates the schema (InitialSchema)
+npm run seed                  # roles, permissions, role→permission mapping, and a platform_admin
+                              # from SEED_ADMIN_EMAIL / SEED_ADMIN_PASSWORD when both are set
 npm run start:dev             # http://localhost:3000
 ```
 
@@ -35,19 +36,24 @@ npm run start:dev             # http://localhost:3000
 | Generate a migration | `npm run migration:generate -- src/database/migrations/<Name>` |
 | Revert the last migration | `npm run migration:revert` |
 
-The TypeORM CLI uses `src/database/data-source.ts`, which loads `.env` itself through `dotenv`. The app uses `TypeOrmModule.forRootAsync` in `app.module.ts`. These are **two separate DB configs** that read the same env vars, so change both together.
+The TypeORM CLI uses `src/database/data-source.ts`, which loads `.env` itself through `dotenv` and validates it with the same `validate()` as the app. The app uses `TypeOrmModule.forRootAsync` in `app.module.ts`. These are **two separate DB configs** that read the same env vars, so change both together.
 
 ## Layout
 
 ```
 src/
   main.ts                 bootstrap + global ValidationPipe (whitelist, transform, forbidUnknownValues)
-  app.module.ts           Config, TypeORM, AuthModule, UsersModule; RolesGuard + PermissionsGuard as APP_GUARD
-  auth/                   login / refresh / logout, JwtStrategy, JwtAuthGuard, DTOs, RefreshTokenSessionEntity
+  app.module.ts           Config (validated), TypeORM, AuthModule, UsersModule;
+                          APP_GUARDs in order: JwtAuthGuard → RolesGuard → PermissionsGuard
+  config/env.validation.ts  EnvironmentVariables class + validate(); the single source of env defaults
+  auth/                   register / login / refresh / logout, UserClaimsService (roles+permissions from DB),
+                          JwtStrategy, JwtAuthGuard, DTOs, RefreshTokenSessionEntity
   database/
     data-source.ts        standalone DataSource for the CLI and seed
     entities.ts           ALL_ENTITIES registry (used by both configs)
-    seed.ts               idempotent seed of roles, permissions and role_permissions
+    migrations/           TypeORM migrations (InitialSchema)
+    seed.ts               idempotent seed of roles, permissions, role_permissions and the admin user
+  test-utils/             helpers for unit tests (fake ExecutionContext)
   modules/
     shared/               cross-cutting RBAC: constants/permissions.ts, enums, decorators, guards,
                           Role / Permission / RolePermission entities, AuthenticatedUser interface
@@ -63,43 +69,35 @@ src/
 - **RBAC**:
   - Permission strings are `<resource>.<read|manage>` and are defined only in `modules/shared/constants/permissions.ts` (`Permissions.USERS_READ`). When you add one, also map it to roles in `database/seed.ts`.
   - Roles are the `GlobalRole` enum (`platform_admin`) and the `OrganizationRole` enum (`property_manager`, `tenant`, `viewer`).
-  - Protect a route with `@UseGuards(JwtAuthGuard)` plus `@RequireRoles({ global: [...], organization: [...] })` and/or `@RequirePermissions(...)`.
-  - Org-scoped role checks resolve the org from the `x-organization-id` header, falling back to the `:organizationId` route param.
+  - Every route requires a valid access token by default (global `JwtAuthGuard`). Opt out with `@Public()` (`modules/shared/decorators/public.decorator.ts`). Do not add `@UseGuards(JwtAuthGuard)`.
+  - Authorize with `@RequireRoles({ global: [...], organization: [...] })` and/or `@RequirePermissions(...)`.
+  - Org-scoped role checks use the `:organizationId` route param when present. The `x-organization-id` header is only a fallback for routes without that param, and a header that disagrees with the param is rejected with 403.
+  - Token claims come from the DB (`UserClaimsService`). The flat `permissions` list contains only permissions of **global** roles; org-scoped permission checks are still to be designed (Phase 3).
   - Read the caller with `@CurrentUser()` or `@CurrentUser('id')`, which returns the `AuthenticatedUser` built from JWT claims in `JwtStrategy.validate`.
-- **Config** comes from `ConfigService.get(...)`. Numeric env vars are parsed with `Number(...)` and guarded with `Number.isFinite`.
+- **Config**: declare every env var (type, validators, default) in `src/config/env.validation.ts` and add it to `.env.example`. Read it with `configService.getOrThrow<T>(...)`; numbers are already parsed. Never add inline `??` fallbacks. In production, JWT secrets must be ≥32 chars and distinct or the app refuses to boot.
 - **Imports** use relative paths. There are no path aliases despite `tsconfig-paths`. Use `import type` for interface- and type-only imports.
 
 ## Features (current state)
 
 | Area | Status |
 |---|---|
-| `POST /auth/login` | Stub: issues tokens from **client-supplied** identity and roles, with no password check |
-| `POST /auth/refresh` | Rotates the refresh token. Sessions are held in an in-memory `Map` |
-| `POST /auth/logout` | Deletes the in-memory session |
-| `GET /users/me` | Returns the JWT claims |
+| `POST /auth/register` | Public. `email` + `password` (8–72 chars), bcrypt. 409 on duplicate email. Returns `{ id, email }`, no tokens |
+| `POST /auth/login` | Public. `email` + `password`; rejects inactive users. Roles/permissions loaded from the DB |
+| `POST /auth/refresh` | Public. Rotates the session in `refresh_token_sessions` (single-use) and reloads claims from the DB |
+| `POST /auth/logout` | Public. Sets `revoked_at` on the session |
+| `GET /users/me` | Authenticated. Returns the JWT claims |
 | `GET /users` | `platform_admin` + `users.read`. Returns an empty stub |
-| DB schema | 9 entities defined, but **no migrations** |
-| Seed | Roles, 10 permissions and the mapping (works once tables exist) |
+| DB schema | 9 entities, `InitialSchema` migration |
+| Seed | Roles, 10 permissions, the mapping, and optional admin user |
+| Tests | Unit specs for guards, `AuthService`; e2e auth/RBAC flow (needs a migrated + seeded DB) |
 | Organizations, properties, leases, payments | Not started (Phases 3–6) |
 
-Access tokens are signed with `JWT_ACCESS_SECRET` (default 900s) and refresh tokens with `JWT_REFRESH_SECRET` (default 604800s). Both token types carry `tokenType` (`access` / `refresh`). Refresh tokens also carry `sessionId`.
+Access tokens are signed with `JWT_ACCESS_SECRET` (default 900s) and carry `sub`, `email`, roles and permissions. Refresh tokens are signed with `JWT_REFRESH_SECRET` (default 604800s) and carry only `sub` and `sessionId`. Both carry `tokenType` (`access` / `refresh`), which `JwtStrategy` and `AuthService` check. Sessions store a SHA-256 hash of the refresh token (not bcrypt: it truncates at 72 bytes).
 
 ## Known errors
 
 Found by code review. Fix these before building features on top of them, and remove each entry once it is fixed.
 
-1. **Login has no credential check (critical).** `src/auth/auth.service.ts:22` signs whatever `userId`, `email`, `globalRoles`, `organizationRoles` and `permissions` the caller sends, so anyone can mint a `platform_admin` token. `passwordHash` and `bcrypt` are unused. (Plan Phase 1.)
-2. **Guard order breaks every protected route.** Global `APP_GUARD`s (`RolesGuard`, `PermissionsGuard`) run *before* controller-level `@UseGuards(JwtAuthGuard)`, so `request.user` is still undefined and `@RequireRoles`/`@RequirePermissions` routes always return 401 (for example `GET /users`). The lifecycle diagram in `TRACKING.md` is wrong on this point. Fix it by registering `JwtAuthGuard` as the first `APP_GUARD` with an `@Public()` opt-out, or by moving the RBAC guards into `@UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)`.
-3. **Cross-tenant role check.** `src/modules/shared/guards/roles.guard.ts:50` prefers the `x-organization-id` header over the `:organizationId` route param, so a caller can authorize against org A while acting on org B. Use the route param when it is present, or reject a mismatch.
-4. **Prototype-key lookup.** At `roles.guard.ts:57`, `user.organizationRoles[organizationId]` on an untrusted header (e.g. `constructor`) returns a non-array, and `.includes` then throws a 500. Use `Object.hasOwn` or a `Map`.
-5. **Logout returns 500 on a bad token.** `auth.service.ts:84` calls `verifyAsync` without try/catch and never checks `tokenType`, unlike `refresh`.
-6. **Refresh sessions are in memory.** At `auth.service.ts:15`, the `Map` is lost on restart, not shared across instances, and never pruned, so memory grows without bound. `RefreshTokenSessionEntity` exists but is unused.
-7. **Stale privileges on refresh.** `auth.service.ts:69` copies roles and permissions from the old refresh token instead of reloading them from the DB, so a revoked role keeps being renewed indefinitely.
-8. **No migrations.** `synchronize: false`, `src/database/migrations/` does not exist, and `AppModule` sets `migrations: []`. On a fresh DB, `npm run seed` fails with `relation "roles" does not exist`. Generate an `InitialSchema` migration first.
-9. **Hardcoded JWT secret fallbacks.** `'dev_access_secret'` / `'dev_refresh_secret'` are used when env vars are missing, and this fallback plus the TTL parsing is duplicated in `auth.module.ts:23`, `jwt.strategy.ts:12` and `auth.service.ts:42/81/107`. Centralize it in one validated config (e.g. `ConfigModule` `validate`) and fail fast in production.
-10. **Seed cleanup.** `process.exit(1)` in the catch block at `src/database/seed.ts:126` skips `finally`, and the top-level `seed()` call is not awaited or caught, so a DB-down failure becomes an unhandled rejection.
-
 Minor issues:
-- `dotenv` is imported in `data-source.ts` but is not a direct dependency. It only resolves transitively through `@nestjs/config`.
 - `README.md` is the unmodified Nest starter.
-- No tests exist beyond the generated `app.controller.spec.ts` and `test/app.e2e-spec.ts`.
+- `InitialSchema` was rendered offline from entity metadata and has not yet been run against a real database.

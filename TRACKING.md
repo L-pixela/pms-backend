@@ -1,6 +1,6 @@
 # Rental Management System — Project Tracking
 
-> Last updated: 2026-09-05
+> Last updated: 2026-10-18
 
 ---
 
@@ -34,19 +34,23 @@ Leases, and Payments. Users belong to Organizations with scoped roles.
 ```
 HTTP Request
   │
-  ├─► JwtAuthGuard          (route-level, via @UseGuards)
-  │     Validates Bearer token, populates request.user
+  ├─► JwtAuthGuard          (global APP_GUARD #1, skipped for @Public() routes)
+  │     Validates Bearer access token, populates request.user
   │
-  ├─► RolesGuard            (global APP_GUARD)
+  ├─► RolesGuard            (global APP_GUARD #2)
   │     Reads @RequireRoles() metadata
   │     Checks globalRoles / organizationRoles from JWT
+  │     Org = :organizationId param (header only as fallback; mismatch → 403)
   │
-  ├─► PermissionsGuard      (global APP_GUARD)
+  ├─► PermissionsGuard      (global APP_GUARD #3)
   │     Reads @RequirePermissions() metadata
   │     Checks permissions[] from JWT
   │
-  └─► Controller → Service → (Repository → PostgreSQL)
-                                └── not yet wired
+  └─► Controller → Service → Repository → PostgreSQL
+
+Global guards run in registration order (AppModule providers), and all of them
+run before any controller-level @UseGuards, which is why JwtAuthGuard must be
+global too.
 ```
 
 ### Module Layout
@@ -57,16 +61,18 @@ src/
 ├── app.module.ts                  Root module — imports AuthModule, UsersModule
 │
 ├── auth/                          Authentication feature module
-│   ├── auth.controller.ts         POST /auth/login, /auth/refresh, /auth/logout
-│   ├── auth.service.ts            Token issuance, rotation, session tracking (in-memory)
+│   ├── auth.controller.ts         POST /auth/register, /auth/login, /auth/refresh, /auth/logout (@Public)
+│   ├── auth.service.ts            Credential check, token issuance, DB-backed session rotation
+│   ├── user-claims.service.ts     Loads roles + permissions from the DB for tokens
 │   ├── auth.module.ts             JwtModule (async config), PassportModule
 │   ├── dto/
-│   │   ├── login.dto.ts           userId, email, globalRoles, organizationRoles, permissions
+│   │   ├── login.dto.ts           email, password
+│   │   ├── register.dto.ts        email, password (8–72 chars)
 │   │   └── refresh-token.dto.ts   refreshToken string
 │   ├── entities/
-│   │   └── refresh-token-session.entity.ts   DB schema (defined, NOT wired)
+│   │   └── refresh-token-session.entity.ts   refresh_token_sessions (SHA-256 token hash)
 │   ├── guards/
-│   │   └── jwt-auth.guard.ts      Extends AuthGuard('jwt')
+│   │   └── jwt-auth.guard.ts      Extends AuthGuard('jwt'); honors @Public()
 │   ├── interfaces/
 │   │   └── token-payload.interface.ts        AccessTokenPayload, RefreshTokenPayload
 │   ├── strategies/
@@ -80,6 +86,7 @@ src/
     │   │   └── permissions.ts     String constants: users.read, properties.manage, etc.
     │   ├── decorators/
     │   │   ├── current-user.decorator.ts         @CurrentUser() param decorator
+│   │   ├── public.decorator.ts               @Public(): skip authentication
     │   │   ├── require-roles.decorator.ts         @RequireRoles({global, organization})
     │   │   └── require-permissions.decorator.ts   @RequirePermissions(...perms)
     │   ├── entities/
@@ -161,10 +168,10 @@ src/
                           └───────────────────────┘
 
 ┌────────────────────────┐
-│ refresh_token_sessions │  (defined, not yet wired to auth service)
+│ refresh_token_sessions │  (wired to AuthService)
 │────────────────────────│
 │ id (PK)                │
-│ user_id                │
+│ user_id (FK)           │
 │ session_id (UK)        │
 │ token_hash             │
 │ expires_at             │
@@ -185,8 +192,9 @@ src/
 | Organization | `OrganizationRole` | `tenant`           |
 | Organization | `OrganizationRole` | `viewer`           |
 
-Organization role context is resolved from the `X-Organization-Id` request header,
-or falls back to an `organizationId` route parameter.
+Organization role context is the `:organizationId` route parameter. The
+`X-Organization-Id` header is used only on routes without that parameter; if both
+are present and differ, the request is rejected with 403.
 
 ### Permissions
 
@@ -205,9 +213,11 @@ or falls back to an `organizationId` route parameter.
 
 ### Guard Chain (applied globally)
 ```
-RolesGuard → PermissionsGuard
+JwtAuthGuard → RolesGuard → PermissionsGuard
 ```
-Both read from JWT claims embedded at login time.
+Roles and permissions are read from the JWT, whose claims are loaded from the DB
+at login and again on every refresh. The flat `permissions[]` only contains
+permissions of global roles; org-scoped permissions are an open Phase 3 question.
 
 ---
 
@@ -216,9 +226,10 @@ Both read from JWT claims embedded at login time.
 ### Auth
 | Method | Path            | Auth | Description                        |
 |--------|-----------------|------|------------------------------------|
-| POST   | /auth/login     | None | Issue access + refresh token pair  |
-| POST   | /auth/refresh   | None | Rotate tokens via refresh token    |
-| POST   | /auth/logout    | None | Invalidate refresh session         |
+| POST   | /auth/register  | None | Create a user (email + password)   |
+| POST   | /auth/login     | None | Verify credentials, issue tokens   |
+| POST   | /auth/refresh   | None | Rotate session, reload claims      |
+| POST   | /auth/logout    | None | Revoke refresh session             |
 
 ### Users
 | Method | Path       | Guards                                  | Description                     |
@@ -233,15 +244,20 @@ Both read from JWT claims embedded at login time.
 | Variable                        | Default              | Description                    |
 |---------------------------------|----------------------|--------------------------------|
 | `PORT`                          | `3000`               | HTTP listen port               |
-| `JWT_ACCESS_SECRET`             | `dev_access_secret`  | Access token signing key       |
-| `JWT_REFRESH_SECRET`            | `dev_refresh_secret` | Refresh token signing key      |
+| `NODE_ENV`                      | `development`        | `development` / `production` / `test` |
+| `JWT_ACCESS_SECRET`             | **required**         | Access token signing key (≥32 chars in production) |
+| `JWT_REFRESH_SECRET`            | **required**         | Refresh token signing key (≥32 chars and ≠ access secret in production) |
 | `JWT_ACCESS_EXPIRES_IN_SECONDS` | `900`                | Access token TTL (15 min)      |
 | `JWT_REFRESH_EXPIRES_IN_SECONDS`| `604800`             | Refresh token TTL (7 days)     |
-| `DB_HOST`                       | —                    | ⚠️ Not defined yet             |
-| `DB_PORT`                       | —                    | ⚠️ Not defined yet             |
-| `DB_USERNAME`                   | —                    | ⚠️ Not defined yet             |
-| `DB_PASSWORD`                   | —                    | ⚠️ Not defined yet             |
-| `DB_NAME`                       | —                    | ⚠️ Not defined yet             |
+| `DB_HOST`                       | `localhost`          | PostgreSQL host                |
+| `DB_PORT`                       | `5432`               | PostgreSQL port                |
+| `DB_USERNAME`                   | `rental_user`        | PostgreSQL user                |
+| `DB_PASSWORD`                   | `rental_pass`        | PostgreSQL password            |
+| `DB_NAME`                       | `rental_db`          | PostgreSQL database            |
+| `SEED_ADMIN_EMAIL`              | —                    | Optional: seed creates this platform_admin |
+| `SEED_ADMIN_PASSWORD`           | —                    | Optional: its password (8–72 chars) |
+
+All variables are validated at startup by `src/config/env.validation.ts`.
 
 ---
 
@@ -253,8 +269,15 @@ Both read from JWT claims embedded at login time.
 - [x] `AuthModule` with JWT access + refresh token issuance
 - [x] Token rotation on refresh (single-use sessions)
 - [x] Logout (invalidates refresh session)
-- [x] In-memory refresh session tracking (Map)
+- [x] Refresh sessions persisted in `refresh_token_sessions` (SHA-256 hash, single-use rotation, revoke on logout)
+- [x] Real credential-based login (bcrypt) + `POST /auth/register`
+- [x] Roles/permissions loaded from DB at login and on refresh
+- [x] Env validation at startup (`src/config/env.validation.ts`)
+- [x] `InitialSchema` migration + seed (roles, permissions, mapping, optional admin)
+- [x] `.env.example`, `docker-compose.yml`
+- [x] Unit tests for `AuthService`, `JwtAuthGuard`, `RolesGuard`, `PermissionsGuard`; e2e auth flow
 - [x] `JwtStrategy` (passport-jwt) mapping token payload → `AuthenticatedUser`
+- [x] Global `JwtAuthGuard` with `@Public()` opt-out, ordered before the RBAC guards
 - [x] Global `RolesGuard` (checks global + organization-scoped roles from JWT)
 - [x] Global `PermissionsGuard` (checks fine-grained permissions from JWT)
 - [x] `@RequireRoles()`, `@RequirePermissions()`, `@CurrentUser()` decorators
@@ -279,19 +302,10 @@ Both read from JWT claims embedded at login time.
 ### 🔴 Missing / Not Yet Implemented
 
 #### Infrastructure
-- [ ] `TypeOrmModule.forRoot()` — **no database connection at all**
-- [ ] DB environment variables (host, port, user, password, dbname)
-- [ ] TypeORM migrations setup (`DataSource` config file)
-- [ ] Initial seed data (roles, permissions, role-permission mappings)
+- [ ] Run `InitialSchema` against a real database (generated offline, not yet applied)
 
 #### Auth
-- [ ] Real credential-based login (password hash check against `users` table)
-- [ ] Persist refresh sessions to `refresh_token_sessions` table
-  - [ ] Wire `RefreshTokenSessionEntity` to `AuthService`
-  - [ ] Hash refresh token before storing (`bcrypt` is already a dependency)
-  - [ ] Check `revokedAt` and `expiresAt` on refresh
-- [ ] Token revocation on logout (set `revokedAt` in DB)
-- [ ] User registration endpoint (`POST /auth/register`)
+- [ ] Rate limiting / throttling on `POST /auth/register` and `/auth/login`
 
 #### Users Module
 - [ ] Wire `UserEntity` via `TypeORM` repository
@@ -335,7 +349,7 @@ Both read from JWT claims embedded at login time.
 - [ ] Payment status tracking (pending, paid, overdue)
 
 #### RBAC (DB-backed)
-- [ ] Load roles and permissions from DB at login (instead of trusting caller input)
+- [ ] Org-scoped permission checks (flat `permissions[]` only covers global roles)
 - [ ] Admin endpoints to manage roles (`GET/POST/DELETE /roles`)
 - [ ] Admin endpoints to manage permissions (`GET /permissions`)
 - [ ] Admin endpoints to assign roles to users globally
@@ -343,17 +357,11 @@ Both read from JWT claims embedded at login time.
 
 #### Developer Experience
 - [ ] Swagger / OpenAPI setup (`@nestjs/swagger`)
-- [ ] `.env.example` file
-- [ ] Docker / `docker-compose.yml` for local PostgreSQL
-- [ ] Unit tests for `AuthService`, `RolesGuard`, `PermissionsGuard`
-- [ ] E2E tests for auth flow
 
 ---
 
 ## Known Issues / Design Notes
 
-> **Login trusts the caller** — `POST /auth/login` currently accepts roles and permissions directly in the request body and embeds them into the JWT without any DB validation. This is intentional scaffolding but **must be replaced** before any real usage.
-
-> **In-memory sessions** — Refresh sessions are stored in a `Map` inside `AuthService`. They are lost on server restart and do not scale horizontally. The `refresh_token_sessions` entity is ready to be wired in.
+> **Org-scoped permissions** — Token `permissions[]` is built from global roles only. Including org-role permissions in a flat list would leak them across organizations, so Phase 3 has to decide how `@RequirePermissions` works per org.
 
 > **No `SharedModule`** — The `shared/` directory has no `@Module()` class. Guards are registered directly in `AppModule`. A `SharedModule` should be created when the shared layer grows.

@@ -22,7 +22,7 @@ and tested against actual PostgreSQL.
    TypeORM CLI (reads the same env vars as the app).
 5. Wire `TypeOrmModule.forRootAsync()` into `AppModule`, pointing at the `DataSource` config.
 6. Set `synchronize: false`, `logging: true` in development.
-7. Create the first migration: `InitialSchema` — generates DDL for all nine entities already
+7. ✅ Create the first migration: `InitialSchema` — generates DDL for all nine entities already
    defined (`users`, `organizations`, `organization_memberships`,
    `organization_membership_roles`, `roles`, `permissions`, `role_permissions`,
    `user_global_roles`, `refresh_token_sessions`).
@@ -43,17 +43,18 @@ responds to `GET /users/me` with a 401 (guard is live, DB is connected).
 DB-backed sessions.
 
 ### Tasks
-1. **Registration** — `POST /auth/register`
+1. ✅ **Registration** — `POST /auth/register`
    - Accept `email` + `password`.
    - Hash with `bcrypt` (already a dep), insert into `users`.
    - Return a minimal success body (no token — force an explicit login).
-2. **Real login** — rewrite `POST /auth/login`
+2. ✅ **Real login** — rewrite `POST /auth/login`
    - Accept `email` + `password` only (drop the role/permission fields from the DTO).
    - Look up the user by email; verify `bcrypt.compare`.
    - Query DB for the user's global roles + permissions to embed in the JWT.
    - Reject inactive users (`isActive = false`).
-3. **Persist refresh sessions** — wire `RefreshTokenSessionEntity` to `AuthService`
-   - Hash the refresh token with `bcrypt` before storing.
+3. ✅ **Persist refresh sessions** — wire `RefreshTokenSessionEntity` to `AuthService`
+   - Hash the refresh token with SHA-256 before storing (not bcrypt: it only reads the
+     first 72 bytes, and JWTs share a near-identical prefix).
    - On `POST /auth/refresh`: load the session by `sessionId`, verify hash,
      check `expiresAt` and `revokedAt`, then rotate.
    - On `POST /auth/logout`: set `revokedAt = NOW()` in the DB row.
@@ -115,7 +116,11 @@ state. A deactivated user can no longer log in.
 4. Resolve the `X-Organization-Id` header in `RolesGuard` to the real membership row
    instead of trusting JWT alone — a caller cannot forge membership for an org they
    don't belong to.
-5. Update the login flow (Phase 1) to embed organization memberships in the JWT
+5. **Decide org-scoped permissions.** Login/refresh currently put only *global*-role
+   permissions in the flat `permissions[]` claim, since org-role permissions there would
+   apply in every org. `@RequirePermissions` needs an org-aware variant (resolve the org
+   like `RolesGuard` does, then check that org's role→permission mapping).
+6. Update the login flow (Phase 1) to embed organization memberships in the JWT
    if the caller sends an `X-Organization-Id` at login (or issue org-scoped tokens
    on demand).
 
