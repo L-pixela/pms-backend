@@ -3,9 +3,12 @@ import {
   CreateDateColumn,
   Entity,
   Index,
+  JoinColumn,
+  ManyToOne,
   PrimaryGeneratedColumn,
   UpdateDateColumn,
 } from 'typeorm';
+import { UserEntity } from '../../modules/users/entities/user.entity';
 
 @Entity({ name: 'refresh_token_sessions' })
 export class RefreshTokenSessionEntity {
@@ -15,6 +18,10 @@ export class RefreshTokenSessionEntity {
   @Index()
   @Column({ name: 'user_id', type: 'uuid' })
   userId: string;
+
+  @JoinColumn({ name: 'user_id' })
+  @ManyToOne(() => UserEntity, { nullable: false, onDelete: 'CASCADE' })
+  user: UserEntity;
 
   @Index({ unique: true })
   @Column({ name: 'session_id', type: 'uuid' })
@@ -29,9 +36,9 @@ export class RefreshTokenSessionEntity {
   @Column({ name: 'revoked_at', type: 'timestamptz', nullable: true })
   revokedAt: Date | null;
 
-  @CreateDateColumn({ type: 'timestamptz' })
+  @CreateDateColumn({ name: 'created_at', type: 'timestamptz' })
   createdAt: Date;
 
-  @UpdateDateColumn({ type: 'timestamptz' })
+  @UpdateDateColumn({ name: 'updated_at', type: 'timestamptz' })
   updatedAt: Date;
 }

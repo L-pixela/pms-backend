@@ -19,9 +19,9 @@ export class PermissionEntity {
   @Column({ type: 'varchar', length: 255, nullable: true })
   description: string | null;
 
-  @CreateDateColumn({ type: 'timestamptz' })
+  @CreateDateColumn({ name: 'created_at', type: 'timestamptz' })
   createdAt: Date;
 
-  @UpdateDateColumn({ type: 'timestamptz' })
+  @UpdateDateColumn({ name: 'updated_at', type: 'timestamptz' })
   updatedAt: Date;
 }
