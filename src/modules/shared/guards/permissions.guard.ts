@@ -6,7 +6,7 @@ import {
 } from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
 import { REQUIRED_PERMISSIONS_KEY } from '../decorators/require-permissions.decorator';
-import type { AuthenticatedUser } from '../interfaces/authenticated-user.interface';
+import type { AuthenticatedRequest } from '../interfaces/authenticated-request.interface';
 
 @Injectable()
 export class PermissionsGuard implements CanActivate {
@@ -22,8 +22,7 @@ export class PermissionsGuard implements CanActivate {
       return true;
     }
 
-    const request = context.switchToHttp().getRequest();
-    const user = request.user as AuthenticatedUser | undefined;
+    const { user } = context.switchToHttp().getRequest<AuthenticatedRequest>();
 
     if (!user) {
       throw new UnauthorizedException('Authentication is required.');

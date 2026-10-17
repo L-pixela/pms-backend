@@ -1,5 +1,4 @@
-import { Controller, Get, UseGuards } from '@nestjs/common';
-import { JwtAuthGuard } from '../../auth/guards/jwt-auth.guard';
+import { Controller, Get } from '@nestjs/common';
 import { Permissions } from '../shared/constants/permissions';
 import { CurrentUser } from '../shared/decorators/current-user.decorator';
 import { RequirePermissions } from '../shared/decorators/require-permissions.decorator';
@@ -9,7 +8,6 @@ import type { AuthenticatedUser } from '../shared/interfaces/authenticated-user.
 import { UsersService } from './users.service';
 
 @Controller('users')
-@UseGuards(JwtAuthGuard)
 export class UsersController {
   constructor(private readonly usersService: UsersService) {}
 

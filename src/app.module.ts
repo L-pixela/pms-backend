@@ -5,6 +5,7 @@ import { TypeOrmModule } from '@nestjs/typeorm';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
 import { AuthModule } from './auth/auth.module';
+import { JwtAuthGuard } from './auth/guards/jwt-auth.guard';
 import { validate } from './config/env.validation';
 import { PermissionsGuard } from './modules/shared/guards/permissions.guard';
 import { RolesGuard } from './modules/shared/guards/roles.guard';
@@ -27,7 +28,7 @@ import { UsersModule } from './modules/users/users.module';
         synchronize: false,
         logging: configService.get<string>('NODE_ENV') !== 'production',
         entities: ALL_ENTITIES,
-        migrations: [],
+        migrations: [__dirname + '/database/migrations/*{.ts,.js}'],
       }),
     }),
     AuthModule,
@@ -36,6 +37,12 @@ import { UsersModule } from './modules/users/users.module';
   controllers: [AppController],
   providers: [
     AppService,
+    // Global guards run in registration order: authenticate first, then
+    // authorize. Opt a route out of authentication with @Public().
+    {
+      provide: APP_GUARD,
+      useClass: JwtAuthGuard,
+    },
     {
       provide: APP_GUARD,
       useClass: RolesGuard,
