@@ -1,19 +1,14 @@
-import type { GlobalRole } from '../../modules/shared/enums/global-role.enum';
-import type { OrganizationRole } from '../../modules/shared/enums/organization-role.enum';
-
+/**
+ * Identity only. Permissions are not embedded: they are resolved from the
+ * database on every request, so a role change applies immediately.
+ */
 export interface AccessTokenPayload {
   sub: string;
   email: string;
-  globalRoles: GlobalRole[];
-  organizationRoles: Record<string, OrganizationRole[]>;
-  permissions: string[];
   tokenType: 'access';
 }
 
-/**
- * Carries no privileges: roles and permissions are reloaded from the
- * database on every refresh.
- */
+/** Identifies the refresh session; carries no privileges. */
 export interface RefreshTokenPayload {
   sub: string;
   tokenType: 'refresh';

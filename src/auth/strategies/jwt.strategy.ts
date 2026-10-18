@@ -20,12 +20,6 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
       throw new UnauthorizedException('Provided token is not an access token.');
     }
 
-    return {
-      id: payload.sub,
-      email: payload.email,
-      globalRoles: payload.globalRoles,
-      organizationRoles: payload.organizationRoles,
-      permissions: payload.permissions,
-    };
+    return { id: payload.sub, email: payload.email };
   }
 }

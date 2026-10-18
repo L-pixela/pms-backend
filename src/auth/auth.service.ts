@@ -8,7 +8,8 @@ import { JwtService } from '@nestjs/jwt';
 import { InjectRepository } from '@nestjs/typeorm';
 import * as bcrypt from 'bcrypt';
 import { createHash, randomUUID } from 'node:crypto';
-import { IsNull, QueryFailedError, Repository } from 'typeorm';
+import { IsNull, Repository } from 'typeorm';
+import { isUniqueViolation } from '../database/postgres-errors';
 import { UserEntity } from '../modules/users/entities/user.entity';
 import type { LoginDto } from './dto/login.dto';
 import type { RefreshTokenDto } from './dto/refresh-token.dto';
@@ -19,10 +20,8 @@ import type {
   RefreshTokenPayload,
 } from './interfaces/token-payload.interface';
 import type { AuthTokenResponse } from './types/auth-token-response.type';
-import { UserClaimsService } from './user-claims.service';
 
 const BCRYPT_COST = 12;
-const PG_UNIQUE_VIOLATION = '23505';
 
 @Injectable()
 export class AuthService {
@@ -36,7 +35,6 @@ export class AuthService {
   constructor(
     private readonly jwtService: JwtService,
     private readonly configService: ConfigService,
-    private readonly userClaimsService: UserClaimsService,
     @InjectRepository(UserEntity)
     private readonly userRepository: Repository<UserEntity>,
     @InjectRepository(RefreshTokenSessionEntity)
@@ -60,10 +58,7 @@ export class AuthService {
 
       return { id: user.id, email: user.email };
     } catch (error) {
-      if (
-        error instanceof QueryFailedError &&
-        (error.driverError as { code?: string }).code === PG_UNIQUE_VIOLATION
-      ) {
+      if (isUniqueViolation(error)) {
         throw new ConflictException('Email is already registered.');
       }
       throw error;
@@ -84,7 +79,7 @@ export class AuthService {
       throw new UnauthorizedException('Invalid credentials.');
     }
 
-    return this.issueTokenPair(await this.buildAccessPayload(user.id));
+    return this.issueTokenPair(this.toAccessPayload(user));
   }
 
   async refresh({ refreshToken }: RefreshTokenDto): Promise<AuthTokenResponse> {
@@ -109,7 +104,9 @@ export class AuthService {
       throw new UnauthorizedException('Refresh session is no longer valid.');
     }
 
-    return this.issueTokenPair(await this.buildAccessPayload(payload.sub));
+    return this.issueTokenPair(
+      this.toAccessPayload(await this.loadActiveUser(payload.sub)),
+    );
   }
 
   async logout({ refreshToken }: RefreshTokenDto): Promise<{ success: true }> {
@@ -150,23 +147,18 @@ export class AuthService {
     return payload;
   }
 
-  private async buildAccessPayload(
-    userId: string,
-  ): Promise<AccessTokenPayload> {
-    const claims = await this.userClaimsService.loadClaims(userId);
+  private async loadActiveUser(userId: string): Promise<UserEntity> {
+    const user = await this.userRepository.findOne({ where: { id: userId } });
 
-    if (!claims?.isActive) {
+    if (!user?.isActive) {
       throw new UnauthorizedException('User is inactive or no longer exists.');
     }
 
-    return {
-      sub: claims.id,
-      email: claims.email,
-      globalRoles: claims.globalRoles,
-      organizationRoles: claims.organizationRoles,
-      permissions: claims.permissions,
-      tokenType: 'access',
-    };
+    return user;
+  }
+
+  private toAccessPayload(user: UserEntity): AccessTokenPayload {
+    return { sub: user.id, email: user.email, tokenType: 'access' };
   }
 
   private async issueTokenPair(

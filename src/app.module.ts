@@ -7,9 +7,10 @@ import { AppService } from './app.service';
 import { AuthModule } from './auth/auth.module';
 import { JwtAuthGuard } from './auth/guards/jwt-auth.guard';
 import { validate } from './config/env.validation';
-import { PermissionsGuard } from './modules/shared/guards/permissions.guard';
-import { RolesGuard } from './modules/shared/guards/roles.guard';
 import { ALL_ENTITIES } from './database/entities';
+import { RolesModule } from './modules/roles/roles.module';
+import { PermissionsGuard } from './modules/shared/guards/permissions.guard';
+import { SharedModule } from './modules/shared/shared.module';
 import { UsersModule } from './modules/users/users.module';
 
 @Module({
@@ -31,7 +32,9 @@ import { UsersModule } from './modules/users/users.module';
         migrations: [__dirname + '/database/migrations/*{.ts,.js}'],
       }),
     }),
+    SharedModule,
     AuthModule,
+    RolesModule,
     UsersModule,
   ],
   controllers: [AppController],
@@ -42,10 +45,6 @@ import { UsersModule } from './modules/users/users.module';
     {
       provide: APP_GUARD,
       useClass: JwtAuthGuard,
-    },
-    {
-      provide: APP_GUARD,
-      useClass: RolesGuard,
     },
     {
       provide: APP_GUARD,

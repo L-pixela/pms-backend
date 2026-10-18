@@ -1,10 +1,9 @@
-import { Controller, Get } from '@nestjs/common';
+import { Controller, Get, Query } from '@nestjs/common';
 import { Permissions } from '../shared/constants/permissions';
 import { CurrentUser } from '../shared/decorators/current-user.decorator';
 import { RequirePermissions } from '../shared/decorators/require-permissions.decorator';
-import { RequireRoles } from '../shared/decorators/require-roles.decorator';
-import { GlobalRole } from '../shared/enums/global-role.enum';
 import type { AuthenticatedUser } from '../shared/interfaces/authenticated-user.interface';
+import { MyPermissionsQueryDto } from './dto/my-permissions-query.dto';
 import { UsersService } from './users.service';
 
 @Controller('users')
@@ -16,8 +15,15 @@ export class UsersController {
     return this.usersService.getCurrentUser(user);
   }
 
+  @Get('me/permissions')
+  getMyPermissions(
+    @CurrentUser() user: AuthenticatedUser,
+    @Query() query: MyPermissionsQueryDto,
+  ) {
+    return this.usersService.getMyPermissions(user, query.organizationId);
+  }
+
   @Get()
-  @RequireRoles({ global: [GlobalRole.PLATFORM_ADMIN] })
   @RequirePermissions(Permissions.USERS_READ)
   listUsers() {
     return this.usersService.listForAdministration();

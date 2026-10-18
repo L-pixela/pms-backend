@@ -4,10 +4,8 @@ import { JwtService } from '@nestjs/jwt';
 import * as bcrypt from 'bcrypt';
 import { createHash } from 'node:crypto';
 import { QueryFailedError } from 'typeorm';
-import { GlobalRole } from '../modules/shared/enums/global-role.enum';
 import { AuthService } from './auth.service';
 import type { AccessTokenPayload } from './interfaces/token-payload.interface';
-import type { UserClaims, UserClaimsService } from './user-claims.service';
 
 const ACCESS_SECRET = 'test-access-secret';
 const REFRESH_SECRET = 'test-refresh-secret';
@@ -36,18 +34,7 @@ describe('AuthService', () => {
     insert: jest.Mock;
     update: jest.Mock;
   };
-  let userClaimsService: { loadClaims: jest.Mock };
   let passwordHash: string;
-
-  const claims = (overrides: Partial<UserClaims> = {}): UserClaims => ({
-    id: 'user-1',
-    email: 'user@example.com',
-    isActive: true,
-    globalRoles: [],
-    organizationRoles: {},
-    permissions: [],
-    ...overrides,
-  });
 
   const storedUser = (overrides = {}) => ({
     id: 'user-1',
@@ -80,12 +67,9 @@ describe('AuthService', () => {
       insert: jest.fn(),
       update: jest.fn(),
     };
-    userClaimsService = { loadClaims: jest.fn().mockResolvedValue(claims()) };
-
     service = new AuthService(
       jwtService,
       configService,
-      userClaimsService as unknown as UserClaimsService,
       userRepository as never,
       sessionRepository as never,
     );
@@ -165,14 +149,8 @@ describe('AuthService', () => {
       ).rejects.toThrow(UnauthorizedException);
     });
 
-    it('embeds DB-sourced roles and stores only a hash of the refresh token', async () => {
+    it('issues an identity-only access token and stores only a hash of the refresh token', async () => {
       userRepository.findOne.mockResolvedValue(storedUser());
-      userClaimsService.loadClaims.mockResolvedValue(
-        claims({
-          globalRoles: [GlobalRole.PLATFORM_ADMIN],
-          permissions: ['users.read'],
-        }),
-      );
 
       const { accessToken, refreshToken } = await service.login({
         email: 'USER@example.com',
@@ -182,12 +160,15 @@ describe('AuthService', () => {
       expect(userRepository.findOne).toHaveBeenCalledWith({
         where: { email: 'user@example.com' },
       });
-      expect(decodeAccess(accessToken)).toMatchObject({
+      const access = decodeAccess(accessToken);
+      expect(access).toMatchObject({
         sub: 'user-1',
-        globalRoles: [GlobalRole.PLATFORM_ADMIN],
-        permissions: ['users.read'],
+        email: 'user@example.com',
         tokenType: 'access',
       });
+      // Permissions are resolved per request, never baked into the token.
+      expect(access).not.toHaveProperty('permissions');
+      expect(access).not.toHaveProperty('globalRoles');
 
       const session = (
         sessionRepository.insert.mock.calls as unknown[][]
@@ -210,17 +191,18 @@ describe('AuthService', () => {
       ).refreshToken;
     };
 
-    it('reloads roles from the DB instead of copying them from the token', async () => {
-      userClaimsService.loadClaims.mockResolvedValue(
-        claims({ globalRoles: [GlobalRole.PLATFORM_ADMIN] }),
-      );
+    it('reloads the user from the DB by id', async () => {
       const refreshToken = await loginAndGetRefreshToken();
+      userRepository.findOne.mockResolvedValue(
+        storedUser({ email: 'renamed@example.com' }),
+      );
 
-      // The admin role is revoked between login and refresh.
-      userClaimsService.loadClaims.mockResolvedValue(claims());
       const { accessToken } = await service.refresh({ refreshToken });
 
-      expect(decodeAccess(accessToken).globalRoles).toEqual([]);
+      expect(userRepository.findOne).toHaveBeenLastCalledWith({
+        where: { id: 'user-1' },
+      });
+      expect(decodeAccess(accessToken).email).toBe('renamed@example.com');
     });
 
     it('rejects a token whose session was already rotated or revoked', async () => {
@@ -234,9 +216,7 @@ describe('AuthService', () => {
 
     it('rejects a user who was deactivated after login', async () => {
       const refreshToken = await loginAndGetRefreshToken();
-      userClaimsService.loadClaims.mockResolvedValue(
-        claims({ isActive: false }),
-      );
+      userRepository.findOne.mockResolvedValue(storedUser({ isActive: false }));
 
       await expect(service.refresh({ refreshToken })).rejects.toThrow(
         UnauthorizedException,

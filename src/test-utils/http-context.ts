@@ -35,9 +35,6 @@ export function buildUser(
   return {
     id: 'user-1',
     email: 'user@example.com',
-    globalRoles: [],
-    organizationRoles: {},
-    permissions: [],
     ...overrides,
   };
 }
