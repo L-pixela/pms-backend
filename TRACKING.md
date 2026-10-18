@@ -37,14 +37,11 @@ HTTP Request
   ├─► JwtAuthGuard          (global APP_GUARD #1, skipped for @Public() routes)
   │     Validates Bearer access token, populates request.user
   │
-  ├─► RolesGuard            (global APP_GUARD #2)
-  │     Reads @RequireRoles() metadata
-  │     Checks globalRoles / organizationRoles from JWT
-  │     Org = :organizationId param (header only as fallback; mismatch → 403)
-  │
-  ├─► PermissionsGuard      (global APP_GUARD #3)
+  ├─► PermissionsGuard      (global APP_GUARD #2)
   │     Reads @RequirePermissions() metadata
-  │     Checks permissions[] from JWT
+  │     Loads the caller's effective permissions from the DB (AccessControlService):
+  │       global-role permissions ∪ (if :organizationId) that org's membership-role permissions
+  │     Org = :organizationId route param only (non-UUID → 400); no header
   │
   └─► Controller → Service → Repository → PostgreSQL
 
@@ -81,30 +78,36 @@ src/
 │       └── auth-token-response.type.ts
 │
 └── modules/
-    ├── shared/                    Cross-cutting concerns (no NestJS module yet)
+    ├── shared/                    Cross-cutting RBAC (SharedModule exports AccessControlService)
     │   ├── constants/
-    │   │   └── permissions.ts     String constants: users.read, properties.manage, etc.
+    │   │   ├── permissions.ts     Permissions + PERMISSION_CATALOG (description, allowed role scopes)
+    │   │   └── system-roles.ts    SystemRoles keys + SYSTEM_ROLE_DEFINITIONS (seed-owned roles)
     │   ├── decorators/
     │   │   ├── current-user.decorator.ts         @CurrentUser() param decorator
-│   │   ├── public.decorator.ts               @Public(): skip authentication
-    │   │   ├── require-roles.decorator.ts         @RequireRoles({global, organization})
+    │   │   ├── public.decorator.ts               @Public(): skip authentication
     │   │   └── require-permissions.decorator.ts   @RequirePermissions(...perms)
     │   ├── entities/
-    │   │   ├── role.entity.ts             roles table (key, name, scope: global|organization)
+    │   │   ├── role.entity.ts             roles (key, name, description, scope, organization_id, is_system)
     │   │   ├── permission.entity.ts       permissions table (key, description)
     │   │   └── role-permission.entity.ts  role_permissions join table
-    │   ├── enums/
-    │   │   ├── global-role.enum.ts        GlobalRole.PLATFORM_ADMIN
-    │   │   └── organization-role.enum.ts  PROPERTY_MANAGER | TENANT | VIEWER
     │   ├── guards/
-    │   │   ├── roles.guard.ts             Global guard — checks roles from JWT
-    │   │   └── permissions.guard.ts       Global guard — checks permissions from JWT
+    │   │   └── permissions.guard.ts       Global guard — checks DB-resolved permissions
+    │   ├── services/
+    │   │   └── access-control.service.ts  getEffectivePermissions(), assertHoldsAll() (anti-escalation)
+    │   ├── organization-context.ts        resolveOrganizationId(): :organizationId param only
     │   └── interfaces/
-    │       └── authenticated-user.interface.ts    Shape of request.user
+    │       └── authenticated-user.interface.ts    Shape of request.user ({ id, email })
+    │
+    ├── roles/                     Role CRUD + assignments (RolesModule)
+    │   ├── roles.controller.ts                GET /permissions, /roles CRUD (platform roles)
+    │   ├── organization-roles.controller.ts   /organizations/:organizationId/roles CRUD
+    │   ├── role-assignments.controller.ts     PUT/GET user global roles and member roles
+    │   ├── roles.service.ts, role-assignments.service.ts
+    │   └── dto/
     │
     ├── users/
-    │   ├── users.controller.ts    GET /users/me, GET /users (admin stub)
-    │   ├── users.service.ts       getCurrentUser(), listForAdministration() (stub)
+    │   ├── users.controller.ts    GET /users/me, GET /users/me/permissions, GET /users (admin stub)
+    │   ├── users.service.ts       getCurrentUser(), getMyPermissions(), listForAdministration() (stub)
     │   ├── users.module.ts
     │   └── entities/
     │       ├── user.entity.ts             users table
@@ -183,41 +186,53 @@ src/
 
 ## Authorization Model
 
-### Roles (two scopes)
+Routes check **permissions only** (`@RequirePermissions`); no code checks a role name.
+Permissions are fixed in code; roles are data, built from permissions at runtime.
 
-| Scope        | Enum Value         | Role Key           |
-|--------------|--------------------|--------------------|
-| Global       | `GlobalRole`       | `platform_admin`   |
-| Organization | `OrganizationRole` | `property_manager` |
-| Organization | `OrganizationRole` | `tenant`           |
-| Organization | `OrganizationRole` | `viewer`           |
+### Roles
 
-Organization role context is the `:organizationId` route parameter. The
-`X-Organization-Id` header is used only on routes without that parameter; if both
-are present and differ, the request is rejected with 403.
+| Kind | `organization_id` | `scope` | Managed via | Who can assign it |
+|---|---|---|---|---|
+| Global role | `NULL` | `global` | `/roles` | `PUT /users/:userId/roles` |
+| Org template | `NULL` | `organization` | `/roles` | any org, `PUT /organizations/:organizationId/members/:userId/roles` |
+| Custom org role | the org | `organization` | `/organizations/:organizationId/roles` | that org only |
+
+System roles (`is_system`, seeded from `SYSTEM_ROLE_DEFINITIONS`) are read-only through the
+API; the seed keeps their permissions exactly in sync with code:
+`platform_admin` (global, all permissions), `property_manager`, `tenant`, `viewer` (templates).
+
+Role keys are unique among platform roles and within each org (partial unique indexes).
 
 ### Permissions
 
-| Key                    | Intended Purpose             |
-|------------------------|------------------------------|
-| `users.read`           | View user list               |
-| `users.manage`         | Create/update/delete users   |
-| `organizations.read`   | View organizations           |
-| `organizations.manage` | Create/update/delete orgs    |
-| `properties.read`      | View properties              |
-| `properties.manage`    | Create/update/delete properties |
-| `leases.read`          | View leases                  |
-| `leases.manage`        | Create/update/delete leases  |
-| `payments.read`        | View payments                |
-| `payments.manage`      | Create/update/delete payments|
+| Key                    | Allowed on      | Purpose                              |
+|------------------------|-----------------|--------------------------------------|
+| `users.read`           | global          | View user accounts                   |
+| `users.manage`         | global          | Create/update/deactivate users       |
+| `roles.read`           | global, org     | View roles and assignments           |
+| `roles.manage`         | global, org     | Create/update/delete/assign roles    |
+| `organizations.read`   | global, org     | View organizations                   |
+| `organizations.manage` | global, org     | Update organizations and members     |
+| `properties.read`      | global, org     | View properties                      |
+| `properties.manage`    | global, org     | Create/update/delete properties      |
+| `leases.read`          | global, org     | View leases                          |
+| `leases.manage`        | global, org     | Create/update/terminate leases       |
+| `payments.read`        | global, org     | View payments                        |
+| `payments.manage`      | global, org     | Record/update payments               |
 
-### Guard Chain (applied globally)
-```
-JwtAuthGuard → RolesGuard → PermissionsGuard
-```
-Roles and permissions are read from the JWT, whose claims are loaded from the DB
-at login and again on every refresh. The flat `permissions[]` only contains
-permissions of global roles; org-scoped permissions are an open Phase 3 question.
+### Resolution rules
+
+- **Effective permissions** = permissions of the caller's global roles, plus, on a route
+  with `:organizationId`, those of their roles in that org. Global permissions therefore
+  apply in every org (that is how a platform admin acts in any org); org permissions never
+  leak into another org or onto platform routes.
+- Resolved from the DB **per request**, so role edits, revocations and deactivations
+  (`is_active = false` → no permissions) take effect immediately. Tokens carry identity only.
+- The org comes **only** from the `:organizationId` route param (non-UUID → 400). Every
+  org-scoped route must use exactly that param name.
+- **Anti-escalation:** a caller can only create, change, delete, assign or unassign a role
+  whose permissions they all hold themselves in that context (403 otherwise).
+- A role still assigned to anyone cannot be deleted (409).
 
 ---
 
@@ -228,14 +243,34 @@ permissions of global roles; org-scoped permissions are an open Phase 3 question
 |--------|-----------------|------|------------------------------------|
 | POST   | /auth/register  | None | Create a user (email + password)   |
 | POST   | /auth/login     | None | Verify credentials, issue tokens   |
-| POST   | /auth/refresh   | None | Rotate session, reload claims      |
+| POST   | /auth/refresh   | None | Rotate session, re-check user is active |
 | POST   | /auth/logout    | None | Revoke refresh session             |
 
 ### Users
-| Method | Path       | Guards                                  | Description                     |
-|--------|------------|-----------------------------------------|---------------------------------|
-| GET    | /users/me  | JWT                                     | Current user profile (from JWT) |
-| GET    | /users     | JWT + `platform_admin` + `users.read`   | List all users (stub)           |
+| Method | Path                  | Permission    | Description                                       |
+|--------|-----------------------|---------------|---------------------------------------------------|
+| GET    | /users/me             | — (JWT)       | Profile + global roles + roles per organization   |
+| GET    | /users/me/permissions | — (JWT)       | Effective permissions; `?organizationId=` for one org |
+| GET    | /users                | `users.read`  | List all users (stub)                             |
+
+### Roles & permissions
+| Method | Path | Permission | Description |
+|---|---|---|---|
+| GET | /permissions | — (JWT) | Permission catalog with allowed scopes |
+| GET | /roles?scope= | `roles.read` | Platform roles (global + org templates) |
+| POST | /roles | `roles.manage` | Create platform role `{ key, name, description?, scope, permissions[] }` |
+| GET | /roles/:roleId | `roles.read` | One platform role |
+| PATCH | /roles/:roleId | `roles.manage` | Update `name`, `description`, `permissions` (replaces set) |
+| DELETE | /roles/:roleId | `roles.manage` | 204; 409 if still assigned |
+| GET | /users/:userId/roles | `roles.read` | User's global roles |
+| PUT | /users/:userId/roles | `roles.manage` | Replace global roles `{ roleIds[] }` |
+| GET | /organizations/:organizationId/roles | `roles.read` (in org) | Templates + the org's custom roles |
+| POST | /organizations/:organizationId/roles | `roles.manage` (in org) | Create custom role `{ key, name, description?, permissions[] }` |
+| GET | /organizations/:organizationId/roles/:roleId | `roles.read` (in org) | Template or own custom role (other orgs' → 404) |
+| PATCH | /organizations/:organizationId/roles/:roleId | `roles.manage` (in org) | Custom roles only (templates → 403) |
+| DELETE | /organizations/:organizationId/roles/:roleId | `roles.manage` (in org) | Custom roles only; 409 if assigned |
+| GET | /organizations/:organizationId/members/:userId/roles | `roles.read` (in org) | Member's roles (404 if not a member) |
+| PUT | /organizations/:organizationId/members/:userId/roles | `roles.manage` (in org) | Replace member's roles `{ roleIds[] }` |
 
 ---
 
@@ -271,20 +306,22 @@ All variables are validated at startup by `src/config/env.validation.ts`.
 - [x] Logout (invalidates refresh session)
 - [x] Refresh sessions persisted in `refresh_token_sessions` (SHA-256 hash, single-use rotation, revoke on logout)
 - [x] Real credential-based login (bcrypt) + `POST /auth/register`
-- [x] Roles/permissions loaded from DB at login and on refresh
 - [x] Env validation at startup (`src/config/env.validation.ts`)
-- [x] `InitialSchema` migration + seed (roles, permissions, mapping, optional admin)
+- [x] `InitialSchema` + `DynamicRoles` migrations, both run against Postgres 16; no entity drift
+- [x] Seed: permission catalog, system roles synced exactly, optional admin (idempotent)
 - [x] `.env.example`, `docker-compose.yml`
-- [x] Unit tests for `AuthService`, `JwtAuthGuard`, `RolesGuard`, `PermissionsGuard`; e2e auth flow
-- [x] `JwtStrategy` (passport-jwt) mapping token payload → `AuthenticatedUser`
-- [x] Global `JwtAuthGuard` with `@Public()` opt-out, ordered before the RBAC guards
-- [x] Global `RolesGuard` (checks global + organization-scoped roles from JWT)
-- [x] Global `PermissionsGuard` (checks fine-grained permissions from JWT)
-- [x] `@RequireRoles()`, `@RequirePermissions()`, `@CurrentUser()` decorators
-- [x] `GlobalRole` and `OrganizationRole` enums
-- [x] `Permissions` string constants (all 10 permission keys)
-- [x] `GET /users/me` endpoint
-- [x] `GET /users` admin stub (JWT + role + permission guarded)
+- [x] Unit tests for `AuthService`, `JwtAuthGuard`, `PermissionsGuard`; e2e auth + RBAC flows
+- [x] `JwtStrategy` (passport-jwt) mapping token payload → `AuthenticatedUser` (identity only)
+- [x] Global `JwtAuthGuard` with `@Public()` opt-out, ordered before the RBAC guard
+- [x] Permission-only RBAC: global `PermissionsGuard` resolving permissions from the DB per
+      request, global + org-scoped (`:organizationId`)
+- [x] Dynamic roles: platform roles, org templates, per-org custom roles; system roles read-only
+- [x] Role CRUD (`/roles`, `/organizations/:organizationId/roles`), `GET /permissions`
+- [x] Role assignment for users (global) and org members, with anti-escalation checks
+- [x] `@RequirePermissions()`, `@CurrentUser()` decorators
+- [x] `Permissions` catalog (12 keys) with allowed role scopes
+- [x] `GET /users/me`, `GET /users/me/permissions`
+- [x] `GET /users` admin stub (permission guarded)
 - [x] TypeORM entity definitions:
   - [x] `users`
   - [x] `organizations`
@@ -301,9 +338,6 @@ All variables are validated at startup by `src/config/env.validation.ts`.
 
 ### 🔴 Missing / Not Yet Implemented
 
-#### Infrastructure
-- [ ] Run `InitialSchema` against a real database (generated offline, not yet applied)
-
 #### Auth
 - [ ] Rate limiting / throttling on `POST /auth/register` and `/auth/login`
 
@@ -319,41 +353,40 @@ All variables are validated at startup by `src/config/env.validation.ts`.
 - [ ] Create `OrganizationsModule`, `OrganizationsController`, `OrganizationsService`
 - [ ] `POST /organizations` — create organization
 - [ ] `GET /organizations` — list organizations
-- [ ] `GET /organizations/:id` — get organization
-- [ ] `PATCH /organizations/:id` — update organization
-- [ ] `DELETE /organizations/:id` — delete organization
-- [ ] `POST /organizations/:id/members` — invite/add member
-- [ ] `GET /organizations/:id/members` — list members
-- [ ] `PATCH /organizations/:id/members/:userId` — update member role
-- [ ] `DELETE /organizations/:id/members/:userId` — remove member
+- [ ] `GET /organizations/:organizationId` — get organization
+- [ ] `PATCH /organizations/:organizationId` — update organization
+- [ ] `DELETE /organizations/:organizationId` — delete organization
+- [ ] `POST /organizations/:organizationId/members` — invite/add member
+- [ ] `GET /organizations/:organizationId/members` — list members
+- [ ] `PATCH /organizations/:organizationId/members/:userId` — update member role
+- [ ] `DELETE /organizations/:organizationId/members/:userId` — remove member
 
 #### Properties Module
 - [ ] `PropertyEntity` — define DB schema
 - [ ] `PropertiesModule`, `PropertiesController`, `PropertiesService`
-- [ ] `POST /organizations/:orgId/properties`
-- [ ] `GET /organizations/:orgId/properties`
-- [ ] `GET /organizations/:orgId/properties/:id`
-- [ ] `PATCH /organizations/:orgId/properties/:id`
-- [ ] `DELETE /organizations/:orgId/properties/:id`
+- [ ] `POST /organizations/:organizationId/properties`
+- [ ] `GET /organizations/:organizationId/properties`
+- [ ] `GET /organizations/:organizationId/properties/:id`
+- [ ] `PATCH /organizations/:organizationId/properties/:id`
+- [ ] `DELETE /organizations/:organizationId/properties/:id`
 
 #### Leases Module
 - [ ] `LeaseEntity` — define DB schema (tenant, property, start/end date, rent amount)
 - [ ] `LeasesModule`, `LeasesController`, `LeasesService`
-- [ ] CRUD endpoints under `/organizations/:orgId/leases`
+- [ ] CRUD endpoints under `/organizations/:organizationId/leases`
 - [ ] Lease status tracking (active, expired, terminated)
 
 #### Payments Module
 - [ ] `PaymentEntity` — define DB schema (lease, amount, due date, paid date, status)
 - [ ] `PaymentsModule`, `PaymentsController`, `PaymentsService`
-- [ ] CRUD endpoints under `/organizations/:orgId/payments`
+- [ ] CRUD endpoints under `/organizations/:organizationId/payments`
 - [ ] Payment status tracking (pending, paid, overdue)
 
-#### RBAC (DB-backed)
-- [ ] Org-scoped permission checks (flat `permissions[]` only covers global roles)
-- [ ] Admin endpoints to manage roles (`GET/POST/DELETE /roles`)
-- [ ] Admin endpoints to manage permissions (`GET /permissions`)
-- [ ] Admin endpoints to assign roles to users globally
-- [ ] Admin endpoints to assign roles to organization members
+#### RBAC (follow-ups)
+- [ ] Per-request permission cache, if the one indexed query per guarded request becomes a hotspot
+- [ ] Protect against removing the last holder of `platform_admin`
+- [ ] Organization data isolation (Phases 3–6): services must scope every query by
+      `:organizationId`; the guard only authorizes, it does not filter data
 
 #### Developer Experience
 - [ ] Swagger / OpenAPI setup (`@nestjs/swagger`)

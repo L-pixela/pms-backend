@@ -104,30 +104,25 @@ state. A deactivated user can no longer log in.
    - `POST /organizations` — create; `platform_admin` only.
    - `GET /organizations` — list (paginated); `platform_admin` or scoped to the
      caller's memberships for non-admins.
-   - `GET /organizations/:id` — fetch one; member or admin.
-   - `PATCH /organizations/:id` — update name/slug; `property_manager` of that org or admin.
-   - `DELETE /organizations/:id` — soft-delete or hard-delete (decide policy); admin only.
-3. Membership management (all under `/organizations/:id/members`):
-   - `POST /members` — invite a user by email; assign an `OrganizationRole`.
+   - `GET /organizations/:organizationId` — fetch one; member or admin.
+   - `PATCH /organizations/:organizationId` — update name/slug; `property_manager` of that org or admin.
+   - `DELETE /organizations/:organizationId` — soft-delete or hard-delete (decide policy); admin only.
+3. Membership management (all under `/organizations/:organizationId/members`):
+   - `POST /members` — invite a user by email; assign initial roles (`roleIds`).
      Creates `organization_memberships` + `organization_membership_roles` rows.
    - `GET /members` — list members with their roles.
-   - `PATCH /members/:userId` — change the member's organization role.
+   - `PATCH /members/:userId` — change the member's roles (or reuse the existing role-assignment endpoint).
    - `DELETE /members/:userId` — remove membership.
-4. Resolve the `X-Organization-Id` header in `RolesGuard` to the real membership row
-   instead of trusting JWT alone — a caller cannot forge membership for an org they
-   don't belong to.
-5. **Decide org-scoped permissions.** Login/refresh currently put only *global*-role
-   permissions in the flat `permissions[]` claim, since org-role permissions there would
-   apply in every org. `@RequirePermissions` needs an org-aware variant (resolve the org
-   like `RolesGuard` does, then check that org's role→permission mapping).
-6. Update the login flow (Phase 1) to embed organization memberships in the JWT
-   if the caller sends an `X-Organization-Id` at login (or issue org-scoped tokens
-   on demand).
+4. Membership endpoints assign roles by id (platform templates or the org's custom roles);
+   role assignment itself already exists (`PUT /organizations/:organizationId/members/:userId/roles`).
+5. Org-scoped authorization is already in place (Phase 7): use `:organizationId` as the
+   route param name on every org route and `@RequirePermissions(...)`. Services must still
+   scope every query by `organizationId` — the guard authorizes, it does not filter data.
 
 ### Exit Criterion
 A `platform_admin` can create an org and add a user as `property_manager`. That
 `property_manager` can read the org's details but cannot delete it. Guards enforce this
-without trusting JWT-embedded org roles alone.
+from DB-resolved permissions.
 
 ---
 
@@ -141,13 +136,13 @@ can manage them, members can read them.
    `description`, `isActive`, `createdAt`, `updatedAt`.
 2. Generate and run migration.
 3. Create `PropertiesModule`, `PropertiesController`, `PropertiesService`.
-4. Endpoints (all under `/organizations/:orgId/properties`):
+4. Endpoints (all under `/organizations/:organizationId/properties`):
    - `POST /` — create; `property_manager` + `properties.manage`.
    - `GET /` — list; `properties.read` (paginated, filter by `isActive`).
    - `GET /:id` — fetch one; `properties.read`.
    - `PATCH /:id` — update; `properties.manage`.
    - `DELETE /:id` — soft-delete (`isActive = false`); `properties.manage`.
-5. Enforce org scoping: a property's `organizationId` must match `:orgId` on every
+5. Enforce org scoping: a property's `organizationId` must match `:organizationId` on every
    request — never trust the body alone.
 6. Add DTOs with validation.
 
@@ -167,7 +162,7 @@ request scoped to Org B.
    `status` (enum: `active | expired | terminated`), `createdAt`, `updatedAt`.
 2. Generate and run migration.
 3. Create `LeasesModule`, `LeasesController`, `LeasesService`.
-4. Endpoints (all under `/organizations/:orgId/leases`):
+4. Endpoints (all under `/organizations/:organizationId/leases`):
    - `POST /` — create; `leases.manage`. Validate that `propertyId` belongs to `orgId`.
    - `GET /` — list; `leases.read`. Support filter by `status`, `propertyId`, `tenantUserId`.
    - `GET /:id` — fetch one; `leases.read`.
@@ -195,7 +190,7 @@ lease transitions to `expired` once its end date passes.
    `updatedAt`.
 2. Generate and run migration.
 3. Create `PaymentsModule`, `PaymentsController`, `PaymentsService`.
-4. Endpoints (all under `/organizations/:orgId/payments`):
+4. Endpoints (all under `/organizations/:organizationId/payments`):
    - `POST /` — create a payment record against a lease; `payments.manage`.
      Validate `leaseId` belongs to `orgId`.
    - `GET /` — list; `payments.read`. Filter by `status`, `leaseId`, `dueDate` range.
@@ -214,33 +209,30 @@ overdue payments for a lease.
 
 ---
 
-## Phase 7 — RBAC Hardening (DB-backed)
+## Phase 7 — RBAC Hardening (DB-backed) ✅ Done (ahead of Phases 3–6)
 
-**Goal:** Roles and permissions are managed via API, not hard-coded. Login pulls the
-real role+permission graph from the DB every time.
+**Goal:** Roles and permissions are managed via API, not hard-coded, and the guard always
+sees the live DB state.
 
-### Tasks
-1. Admin endpoints for roles:
-   - `GET /roles` — list all roles; `platform_admin`.
-   - `POST /roles` — create a new role; `platform_admin`.
-   - `DELETE /roles/:id` — remove a role (guard: cannot delete seeded system roles);
-     `platform_admin`.
-2. Admin endpoints for permissions:
-   - `GET /permissions` — list all permissions; `platform_admin`.
-3. Role–permission assignment:
-   - `POST /roles/:id/permissions` — add a permission to a role.
-   - `DELETE /roles/:id/permissions/:permissionId` — remove a permission from a role.
-4. User role assignment (global):
-   - `POST /users/:id/roles` — assign a global role to a user; `platform_admin`.
-   - `DELETE /users/:id/roles/:roleId` — revoke a global role.
-5. Expand the login query to join `user_global_roles → roles → role_permissions →
-   permissions` so the JWT always reflects the live DB state.
-6. Create a `SharedModule` (`@Module()`) that exports the guards and makes the module
-   graph explicit.
+### Delivered
+- Permission-only authorization: `@RequirePermissions` + global `PermissionsGuard`;
+  `RolesGuard` / `@RequireRoles` / role enums removed.
+- Permissions are a code catalog (`PERMISSION_CATALOG`, with the role scopes each may be
+  held by); roles are data: platform global roles, platform org templates, and per-org
+  custom roles (`roles.organization_id`). Seed-owned system roles are read-only via API.
+- Effective permissions resolved from the DB per request (`AccessControlService`):
+  global roles ∪ roles in the `:organizationId` org. Tokens carry identity only.
+- Role CRUD (`/roles`, `/organizations/:organizationId/roles`), `GET /permissions`,
+  assignment (`PUT /users/:userId/roles`, `PUT /organizations/:organizationId/members/:userId/roles`).
+- Anti-escalation: callers can only create, change, delete, assign or unassign roles whose
+  permissions they all hold.
 
-### Exit Criterion
-Removing a permission from a role in the DB is reflected on the next login — the user no
-longer has that permission embedded in their token. Guards still enforce correctly.
+### Exit Criterion (met)
+Removing a permission from a role takes effect on the user's very next request (e2e).
+
+### Remaining
+- Optional per-request permission cache if the guard query becomes a hotspot.
+- Guard against removing the last `platform_admin`.
 
 ---
 
@@ -254,7 +246,6 @@ tested.
    `@ApiProperty`, `@ApiOperation`, `@ApiBearerAuth`. Expose at `/api/docs`.
 2. **Unit tests**:
    - `AuthService` — login, refresh, logout logic.
-   - `RolesGuard` — global role check, org-scoped role check, bypass for public routes.
    - `PermissionsGuard` — permission present / absent / missing decorator cases.
 3. **E2E tests** — auth flow (`register → login → refresh → logout → stale refresh rejected`).
 4. **README** — setup steps, env vars table, migration + seed commands, link to Swagger.
@@ -293,16 +284,21 @@ phase — adding them here at the end just ensures nothing ships without them.
 
 ## Quick Reference — Guard Matrix
 
-| Endpoint group            | JWT | Role required          | Permission required  |
-|---------------------------|-----|------------------------|----------------------|
-| `POST /auth/*`            | —   | —                      | —                    |
-| `GET /users/me`           | ✓   | —                      | —                    |
-| `GET/POST/PATCH/DELETE /users` | ✓ | `platform_admin`    | `users.read/.manage` |
-| `POST /organizations`     | ✓   | `platform_admin`       | `organizations.manage` |
-| `GET /organizations`      | ✓   | member or admin        | `organizations.read` |
-| `PATCH/DELETE /organizations/:id` | ✓ | `property_manager` or `platform_admin` | `organizations.manage` |
-| `/organizations/:id/members/*` | ✓ | `property_manager` or `platform_admin` | `organizations.manage` |
-| `/organizations/:orgId/properties/*` | ✓ | `property_manager` | `properties.read/.manage` |
-| `/organizations/:orgId/leases/*` | ✓ | `property_manager` | `leases.read/.manage` |
-| `/organizations/:orgId/payments/*` | ✓ | `property_manager` | `payments.read/.manage` |
-| `/roles`, `/permissions`  | ✓   | `platform_admin`       | —                    |
+Routes check permissions only. On routes with `:organizationId` the caller's global
+permissions plus their permissions in that org count; elsewhere only global ones.
+
+| Endpoint group            | JWT | Permission required  |
+|---------------------------|-----|----------------------|
+| `POST /auth/*`            | —   | —                    |
+| `GET /users/me`, `/users/me/permissions`, `GET /permissions` | ✓ | — |
+| `GET/POST/PATCH/DELETE /users` | ✓ | `users.read/.manage` |
+| `/roles`, `/users/:userId/roles` | ✓ | `roles.read/.manage` (global) |
+| `/organizations/:organizationId/roles`, `.../members/:userId/roles` | ✓ | `roles.read/.manage` (in org) |
+| `POST /organizations`     | ✓   | `organizations.manage` (global) |
+| `GET /organizations`      | ✓   | — (service lists the caller's orgs; all with global `organizations.read`) |
+| `GET/PATCH /organizations/:organizationId` | ✓ | `organizations.read/.manage` (in org) |
+| `DELETE /organizations/:organizationId` | ✓ | `organizations.manage` — decide in Phase 3 whether org-level managers may delete |
+| `/organizations/:organizationId/members/*` | ✓ | `organizations.manage` (in org) |
+| `/organizations/:organizationId/properties/*` | ✓ | `properties.read/.manage` (in org) |
+| `/organizations/:organizationId/leases/*` | ✓ | `leases.read/.manage` (in org) |
+| `/organizations/:organizationId/payments/*` | ✓ | `payments.read/.manage` (in org) |
