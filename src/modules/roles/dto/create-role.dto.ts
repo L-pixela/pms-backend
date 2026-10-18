@@ -14,7 +14,7 @@ import {
   ALL_PERMISSIONS,
   type Permission,
 } from '../../shared/constants/permissions';
-import { RoleScope } from '../../shared/entities/role.entity';
+import { RoleScope } from '../../shared/domain/role';
 
 export const ROLE_KEY_PATTERN = /^[a-z][a-z0-9_]{1,63}$/;
 

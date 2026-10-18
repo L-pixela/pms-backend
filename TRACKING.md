@@ -52,6 +52,10 @@ global too.
 
 ### Module Layout
 
+> Persistence: the `entities/` folders below moved to `src/database/typeorm/entities/`. Each feature
+> now has `domain/` (plain models) and `repositories/` (`I*Repository` + DI token); the TypeORM
+> implementations are in `src/database/typeorm/repositories/` and bound in `TypeOrmDatabaseModule`.
+
 ```
 src/
 ├── main.ts                        Bootstrap, global ValidationPipe (whitelist, transform)
@@ -333,6 +337,9 @@ All variables are validated at startup by `src/config/env.validation.ts`.
   - [x] `user_global_roles`
   - [x] `refresh_token_sessions`
 - [x] Global `ValidationPipe` (`whitelist: true`, `transform: true`)
+- [x] Repository pattern: services depend on `I*Repository` interfaces (injected by `*_REPOSITORY` token)
+      and plain domain models; all TypeORM code lives in `src/database/typeorm/` (entities, mappers,
+      repositories, `TypeOrmDatabaseModule`); an ESLint rule bans TypeORM imports elsewhere in `src/`
 
 ---
 
@@ -398,3 +405,7 @@ All variables are validated at startup by `src/config/env.validation.ts`.
 > **Org-scoped permissions** — Token `permissions[]` is built from global roles only. Including org-role permissions in a flat list would leak them across organizations, so Phase 3 has to decide how `@RequirePermissions` works per org.
 
 > **No `SharedModule`** — The `shared/` directory has no `@Module()` class. Guards are registered directly in `AppModule`. A `SharedModule` should be created when the shared layer grows.
+
+> **Persistence boundary** — Services never import `typeorm`, `@nestjs/typeorm` or a `*Entity`. Repository
+> methods own their transactions (role + permissions, role assignments), so cross-aggregate atomicity
+> (e.g. create organization + owner membership in Phase 3) will need a transaction-runner port.

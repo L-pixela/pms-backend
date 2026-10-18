@@ -1,7 +1,9 @@
-import { ForbiddenException, Injectable } from '@nestjs/common';
-import { InjectDataSource } from '@nestjs/typeorm';
-import { DataSource } from 'typeorm';
+import { ForbiddenException, Inject, Injectable } from '@nestjs/common';
 import { isPermission, Permission } from '../constants/permissions';
+import {
+  PERMISSION_REPOSITORY,
+  type IPermissionRepository,
+} from '../repositories/permission.repository.interface';
 
 /**
  * Resolves what a user may do, straight from the database, so role edits,
@@ -9,7 +11,10 @@ import { isPermission, Permission } from '../constants/permissions';
  */
 @Injectable()
 export class AccessControlService {
-  constructor(@InjectDataSource() private readonly dataSource: DataSource) {}
+  constructor(
+    @Inject(PERMISSION_REPOSITORY)
+    private readonly permissionRepository: IPermissionRepository,
+  ) {}
 
   /**
    * Permissions of the user's global roles, plus, when `organizationId` is
@@ -21,32 +26,13 @@ export class AccessControlService {
     userId: string,
     organizationId: string | null,
   ): Promise<Set<Permission>> {
-    const rows = await this.dataSource.query<{ key: string }[]>(
-      `SELECT p.key
-         FROM users u
-         JOIN user_global_roles ugr ON ugr.user_id = u.id
-         JOIN roles r ON r.id = ugr.role_id AND r.scope = 'global'
-         JOIN role_permissions rp ON rp.role_id = r.id
-         JOIN permissions p ON p.id = rp.permission_id
-        WHERE u.id = $1 AND u.is_active
-       UNION
-       SELECT p.key
-         FROM users u
-         JOIN organization_memberships m
-           ON m.user_id = u.id AND m.organization_id = $2
-         JOIN organization_membership_roles mr ON mr.membership_id = m.id
-         JOIN roles r
-           ON r.id = mr.role_id
-          AND r.scope = 'organization'
-          AND (r.organization_id IS NULL OR r.organization_id = m.organization_id)
-         JOIN role_permissions rp ON rp.role_id = r.id
-         JOIN permissions p ON p.id = rp.permission_id
-        WHERE u.id = $1 AND u.is_active`,
-      [userId, organizationId],
+    const keys = await this.permissionRepository.findEffectivePermissionKeys(
+      userId,
+      organizationId,
     );
 
     // A key that is in the DB but no longer in code grants nothing.
-    return new Set(rows.map((row) => row.key).filter(isPermission));
+    return new Set(keys.filter(isPermission));
   }
 
   /**

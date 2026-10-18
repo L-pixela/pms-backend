@@ -1,12 +1,12 @@
-import { RefreshTokenSessionEntity } from '../auth/entities/refresh-token-session.entity';
-import { OrganizationMembershipRoleEntity } from '../modules/organizations/entities/organization-membership-role.entity';
-import { OrganizationMembershipEntity } from '../modules/organizations/entities/organization-membership.entity';
-import { OrganizationEntity } from '../modules/organizations/entities/organization.entity';
-import { PermissionEntity } from '../modules/shared/entities/permission.entity';
-import { RolePermissionEntity } from '../modules/shared/entities/role-permission.entity';
-import { RoleEntity } from '../modules/shared/entities/role.entity';
-import { UserGlobalRoleEntity } from '../modules/users/entities/user-global-role.entity';
-import { UserEntity } from '../modules/users/entities/user.entity';
+import { RefreshTokenSessionEntity } from './typeorm/entities/refresh-token-session.entity';
+import { OrganizationMembershipRoleEntity } from './typeorm/entities/organization-membership-role.entity';
+import { OrganizationMembershipEntity } from './typeorm/entities/organization-membership.entity';
+import { OrganizationEntity } from './typeorm/entities/organization.entity';
+import { PermissionEntity } from './typeorm/entities/permission.entity';
+import { RolePermissionEntity } from './typeorm/entities/role-permission.entity';
+import { RoleEntity } from './typeorm/entities/role.entity';
+import { UserGlobalRoleEntity } from './typeorm/entities/user-global-role.entity';
+import { UserEntity } from './typeorm/entities/user.entity';
 
 export const ALL_ENTITIES = [
   UserEntity,

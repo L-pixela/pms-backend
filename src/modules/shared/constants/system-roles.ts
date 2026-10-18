@@ -1,4 +1,4 @@
-import { RoleScope } from '../entities/role.entity';
+import { RoleScope } from '../domain/role';
 import { ALL_PERMISSIONS, Permission, Permissions } from './permissions';
 
 /**

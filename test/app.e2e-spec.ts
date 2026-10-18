@@ -4,17 +4,17 @@ import request from 'supertest';
 import { App } from 'supertest/types';
 import { DataSource, IsNull } from 'typeorm';
 import { AppModule } from './../src/app.module';
-import { OrganizationMembershipRoleEntity } from './../src/modules/organizations/entities/organization-membership-role.entity';
-import { OrganizationMembershipEntity } from './../src/modules/organizations/entities/organization-membership.entity';
-import { OrganizationEntity } from './../src/modules/organizations/entities/organization.entity';
+import { OrganizationMembershipRoleEntity } from './../src/database/typeorm/entities/organization-membership-role.entity';
+import { OrganizationMembershipEntity } from './../src/database/typeorm/entities/organization-membership.entity';
+import { OrganizationEntity } from './../src/database/typeorm/entities/organization.entity';
 import { Permissions } from './../src/modules/shared/constants/permissions';
 import {
   SystemRole,
   SystemRoles,
 } from './../src/modules/shared/constants/system-roles';
-import { RoleEntity } from './../src/modules/shared/entities/role.entity';
-import { UserGlobalRoleEntity } from './../src/modules/users/entities/user-global-role.entity';
-import { UserEntity } from './../src/modules/users/entities/user.entity';
+import { RoleEntity } from './../src/database/typeorm/entities/role.entity';
+import { UserGlobalRoleEntity } from './../src/database/typeorm/entities/user-global-role.entity';
+import { UserEntity } from './../src/database/typeorm/entities/user.entity';
 
 interface RoleBody {
   id: string;

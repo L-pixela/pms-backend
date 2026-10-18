@@ -2,24 +2,26 @@ import {
   BadRequestException,
   ConflictException,
   ForbiddenException,
+  Inject,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
-import { InjectDataSource, InjectRepository } from '@nestjs/typeorm';
-import { DataSource, EntityManager, In, IsNull, Repository } from 'typeorm';
-import { isUniqueViolation } from '../../database/postgres-errors';
-import { OrganizationMembershipRoleEntity } from '../organizations/entities/organization-membership-role.entity';
-import { OrganizationEntity } from '../organizations/entities/organization.entity';
+import { DuplicateKeyError } from '../../database/errors';
+import {
+  ORGANIZATION_REPOSITORY,
+  type IOrganizationRepository,
+} from '../organizations/repositories/organization.repository.interface';
 import {
   isAssignableToScope,
   isPermission,
   type Permission,
 } from '../shared/constants/permissions';
-import { PermissionEntity } from '../shared/entities/permission.entity';
-import { RolePermissionEntity } from '../shared/entities/role-permission.entity';
-import { RoleEntity, RoleScope } from '../shared/entities/role.entity';
+import { RoleScope, type Role } from '../shared/domain/role';
+import {
+  ROLE_REPOSITORY,
+  type IRoleRepository,
+} from '../shared/repositories/role.repository.interface';
 import { AccessControlService } from '../shared/services/access-control.service';
-import { UserGlobalRoleEntity } from '../users/entities/user-global-role.entity';
 import type {
   CreatePlatformRoleDto,
   CreateRoleDto,
@@ -48,34 +50,23 @@ export interface RoleView {
 @Injectable()
 export class RolesService {
   constructor(
-    @InjectDataSource() private readonly dataSource: DataSource,
-    @InjectRepository(RoleEntity)
-    private readonly roleRepository: Repository<RoleEntity>,
-    @InjectRepository(RolePermissionEntity)
-    private readonly rolePermissionRepository: Repository<RolePermissionEntity>,
-    @InjectRepository(OrganizationEntity)
-    private readonly organizationRepository: Repository<OrganizationEntity>,
+    @Inject(ROLE_REPOSITORY)
+    private readonly roleRepository: IRoleRepository,
+    @Inject(ORGANIZATION_REPOSITORY)
+    private readonly organizationRepository: IOrganizationRepository,
     private readonly accessControlService: AccessControlService,
   ) {}
 
   async listPlatformRoles(scope?: RoleScope): Promise<RoleView[]> {
-    const roles = await this.roleRepository.find({
-      where: { organizationId: IsNull(), ...(scope && { scope }) },
-      order: { scope: 'ASC', key: 'ASC' },
-    });
+    const roles = await this.roleRepository.listPlatform(scope);
     return this.toViews(roles);
   }
 
   /** The platform templates plus the org's own custom roles. */
   async listOrganizationRoles(organizationId: string): Promise<RoleView[]> {
     await this.assertOrganizationExists(organizationId);
-    const roles = await this.roleRepository.find({
-      where: [
-        { organizationId: IsNull(), scope: RoleScope.ORGANIZATION },
-        { organizationId },
-      ],
-      order: { key: 'ASC' },
-    });
+    const roles =
+      await this.roleRepository.listVisibleToOrganization(organizationId);
     return this.toViews(roles);
   }
 
@@ -157,28 +148,17 @@ export class RolesService {
       return byRole;
     }
 
-    const rows = await this.rolePermissionRepository
-      .createQueryBuilder('rolePermission')
-      .innerJoin('rolePermission.permission', 'permission')
-      .select('rolePermission.roleId', 'roleId')
-      .addSelect('permission.key', 'key')
-      .where('rolePermission.roleId IN (:...roleIds)', { roleIds })
-      .orderBy('permission.key')
-      .getRawMany<{ roleId: string; key: string }>();
+    const keysByRole = await this.roleRepository.loadPermissionKeys(roleIds);
 
-    for (const { roleId, key } of rows) {
-      if (isPermission(key)) {
-        byRole.get(roleId)?.push(key);
-      }
+    for (const [roleId, keys] of keysByRole) {
+      byRole.set(roleId, keys.filter(isPermission));
     }
 
     return byRole;
   }
 
   async assertOrganizationExists(organizationId: string): Promise<void> {
-    const exists = await this.organizationRepository.exists({
-      where: { id: organizationId },
-    });
+    const exists = await this.organizationRepository.exists(organizationId);
 
     if (!exists) {
       throw new NotFoundException('Organization not found.');
@@ -199,24 +179,21 @@ export class RolesService {
     );
 
     try {
-      const role = await this.dataSource.transaction(async (manager) => {
-        const created = await manager.save(
-          manager.create(RoleEntity, {
-            key: dto.key,
-            name: dto.name,
-            description: dto.description ?? null,
-            scope,
-            organizationId,
-            isSystem: false,
-          }),
-        );
-        await this.replacePermissions(manager, created.id, dto.permissions);
-        return created;
-      });
+      const role = await this.roleRepository.create(
+        {
+          key: dto.key,
+          name: dto.name,
+          description: dto.description ?? null,
+          scope,
+          organizationId,
+          isSystem: false,
+        },
+        dto.permissions,
+      );
 
       return this.toView(role);
     } catch (error) {
-      if (isUniqueViolation(error)) {
+      if (error instanceof DuplicateKeyError) {
         throw new ConflictException(`Role key "${dto.key}" is already taken.`);
       }
       throw error;
@@ -226,7 +203,7 @@ export class RolesService {
   private async updateRole(
     callerId: string,
     organizationId: string | null,
-    role: RoleEntity,
+    role: Role,
     dto: UpdateRoleDto,
   ): Promise<RoleView> {
     this.assertNotSystem(role);
@@ -240,33 +217,19 @@ export class RolesService {
       ...(dto.permissions ?? []),
     ]);
 
-    await this.dataSource.transaction(async (manager) => {
-      await manager.update(
-        RoleEntity,
-        { id: role.id },
-        {
-          ...(dto.name !== undefined && { name: dto.name }),
-          ...(dto.description !== undefined && {
-            description: dto.description,
-          }),
-          // Also marks permission-only edits, and keeps the SET non-empty.
-          updatedAt: () => 'now()',
-        },
-      );
-      if (dto.permissions) {
-        await this.replacePermissions(manager, role.id, dto.permissions);
-      }
-    });
-
-    return this.toView(
-      await this.roleRepository.findOneByOrFail({ id: role.id }),
+    const updated = await this.roleRepository.update(
+      role.id,
+      { name: dto.name, description: dto.description },
+      dto.permissions,
     );
+
+    return this.toView(updated);
   }
 
   private async deleteRole(
     callerId: string,
     organizationId: string | null,
-    role: RoleEntity,
+    role: Role,
   ): Promise<void> {
     this.assertNotSystem(role);
 
@@ -277,15 +240,7 @@ export class RolesService {
       current,
     );
 
-    const [globalAssignments, memberAssignments] = await Promise.all([
-      this.dataSource
-        .getRepository(UserGlobalRoleEntity)
-        .count({ where: { roleId: role.id } }),
-      this.dataSource
-        .getRepository(OrganizationMembershipRoleEntity)
-        .count({ where: { roleId: role.id } }),
-    ]);
-    const assignments = globalAssignments + memberAssignments;
+    const assignments = await this.roleRepository.countAssignments(role.id);
 
     if (assignments) {
       throw new ConflictException(
@@ -293,42 +248,11 @@ export class RolesService {
       );
     }
 
-    await this.roleRepository.delete({ id: role.id });
+    await this.roleRepository.delete(role.id);
   }
 
-  private async replacePermissions(
-    manager: EntityManager,
-    roleId: string,
-    permissions: Permission[],
-  ): Promise<void> {
-    await manager.delete(RolePermissionEntity, { roleId });
-
-    if (!permissions.length) {
-      return;
-    }
-
-    const rows = await manager.find(PermissionEntity, {
-      where: { key: In(permissions) },
-    });
-
-    if (rows.length !== permissions.length) {
-      const seeded = new Set(rows.map((row) => row.key));
-      const missing = permissions.filter((key) => !seeded.has(key));
-      throw new Error(
-        `Permissions missing from the database (run \`npm run seed\`): ${missing.join(', ')}`,
-      );
-    }
-
-    await manager.insert(
-      RolePermissionEntity,
-      rows.map((permission) => ({ roleId, permissionId: permission.id })),
-    );
-  }
-
-  private async findPlatformRole(roleId: string): Promise<RoleEntity> {
-    const role = await this.roleRepository.findOne({
-      where: { id: roleId, organizationId: IsNull() },
-    });
+  private async findPlatformRole(roleId: string): Promise<Role> {
+    const role = await this.roleRepository.findPlatform(roleId);
 
     if (!role) {
       throw new NotFoundException('Role not found.');
@@ -341,13 +265,11 @@ export class RolesService {
   private async findRoleVisibleToOrganization(
     organizationId: string,
     roleId: string,
-  ): Promise<RoleEntity> {
-    const role = await this.roleRepository.findOne({
-      where: [
-        { id: roleId, organizationId: IsNull(), scope: RoleScope.ORGANIZATION },
-        { id: roleId, organizationId },
-      ],
-    });
+  ): Promise<Role> {
+    const role = await this.roleRepository.findVisibleToOrganization(
+      organizationId,
+      roleId,
+    );
 
     if (!role) {
       throw new NotFoundException('Role not found.');
@@ -359,7 +281,7 @@ export class RolesService {
   private async findCustomOrganizationRole(
     organizationId: string,
     roleId: string,
-  ): Promise<RoleEntity> {
+  ): Promise<Role> {
     await this.assertOrganizationExists(organizationId);
     const role = await this.findRoleVisibleToOrganization(
       organizationId,
@@ -375,7 +297,7 @@ export class RolesService {
     return role;
   }
 
-  private assertNotSystem(role: RoleEntity): void {
+  private assertNotSystem(role: Role): void {
     if (role.isSystem) {
       throw new ForbiddenException(
         'System roles are managed by the seed and cannot be changed.',
@@ -395,11 +317,11 @@ export class RolesService {
     }
   }
 
-  private async toView(role: RoleEntity): Promise<RoleView> {
+  private async toView(role: Role): Promise<RoleView> {
     return (await this.toViews([role]))[0];
   }
 
-  private async toViews(roles: RoleEntity[]): Promise<RoleView[]> {
+  private async toViews(roles: Role[]): Promise<RoleView[]> {
     const permissions = await this.loadPermissionKeys(
       roles.map((role) => role.id),
     );

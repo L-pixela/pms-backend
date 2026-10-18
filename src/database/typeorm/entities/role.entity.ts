@@ -9,12 +9,8 @@ import {
   PrimaryGeneratedColumn,
   UpdateDateColumn,
 } from 'typeorm';
-import { OrganizationEntity } from '../../organizations/entities/organization.entity';
-
-export enum RoleScope {
-  GLOBAL = 'global',
-  ORGANIZATION = 'organization',
-}
+import { RoleScope } from '../../../modules/shared/domain/role';
+import { OrganizationEntity } from './organization.entity';
 
 /**
  * A named set of permissions.
