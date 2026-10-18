@@ -29,8 +29,10 @@ npm run start:dev             # http://localhost:3000
 | Task | Command |
 |---|---|
 | Build | `npm run build` |
-| Lint (auto-fixes) | `npm run lint` |
+| Lint (auto-fixes, includes Prettier) | `npm run lint` |
+| Lint without fixing (used by CI) | `npm run lint:check` |
 | Format | `npm run format` |
+| Check formatting without writing | `npm run format:check` |
 | Unit tests (`src/**/*.spec.ts`) | `npm test` |
 | E2E tests (`test/`) | `npm run test:e2e` |
 | Generate a migration | `npm run migration:generate -- src/database/migrations/<Name>` |

@@ -33,10 +33,11 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      # Run ESLint directly instead of `npm run lint`: that script uses --fix,
-      # which would auto-fix problems in the CI workspace and report success.
+      # Not `npm run lint`: that script uses --fix, which would auto-fix
+      # problems in the CI workspace and report success. Prettier runs as an
+      # ESLint rule, so this also fails on unformatted code.
       - name: Lint
-        run: npx eslint "{src,apps,libs,test}/**/*.ts"
+        run: npm run lint:check
 
       # Catches type errors that lint and ts-jest can miss.
       - name: Build
