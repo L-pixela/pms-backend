@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, UnauthorizedException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { PassportStrategy } from '@nestjs/passport';
 import { ExtractJwt, Strategy } from 'passport-jwt';
@@ -8,23 +8,18 @@ import type { AuthenticatedUser } from '../../modules/shared/interfaces/authenti
 @Injectable()
 export class JwtStrategy extends PassportStrategy(Strategy) {
   constructor(configService: ConfigService) {
-    const jwtAccessSecret =
-      configService.get<string>('JWT_ACCESS_SECRET') ?? 'dev_access_secret';
-
     super({
       jwtFromRequest: ExtractJwt.fromAuthHeaderAsBearerToken(),
       ignoreExpiration: false,
-      secretOrKey: jwtAccessSecret,
+      secretOrKey: configService.getOrThrow<string>('JWT_ACCESS_SECRET'),
     });
   }
 
   validate(payload: AccessTokenPayload): AuthenticatedUser {
-    return {
-      id: payload.sub,
-      email: payload.email,
-      globalRoles: payload.globalRoles,
-      organizationRoles: payload.organizationRoles,
-      permissions: payload.permissions,
-    };
+    if (payload.tokenType !== 'access') {
+      throw new UnauthorizedException('Provided token is not an access token.');
+    }
+
+    return { id: payload.sub, email: payload.email };
   }
 }

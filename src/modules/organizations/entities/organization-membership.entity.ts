@@ -33,9 +33,9 @@ export class OrganizationMembershipEntity {
   @ManyToOne(() => OrganizationEntity, { nullable: false, onDelete: 'CASCADE' })
   organization: OrganizationEntity;
 
-  @CreateDateColumn({ type: 'timestamptz' })
+  @CreateDateColumn({ name: 'created_at', type: 'timestamptz' })
   createdAt: Date;
 
-  @UpdateDateColumn({ type: 'timestamptz' })
+  @UpdateDateColumn({ name: 'updated_at', type: 'timestamptz' })
   updatedAt: Date;
 }

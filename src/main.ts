@@ -1,4 +1,5 @@
 import { ValidationPipe } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { NestFactory } from '@nestjs/core';
 import { AppModule } from './app.module';
 
@@ -11,6 +12,6 @@ async function bootstrap() {
       forbidUnknownValues: true,
     }),
   );
-  await app.listen(process.env.PORT ?? 3000);
+  await app.listen(app.get(ConfigService).getOrThrow<number>('PORT'));
 }
-bootstrap();
+void bootstrap();

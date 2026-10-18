@@ -1,10 +1,8 @@
-import type { GlobalRole } from '../enums/global-role.enum';
-import type { OrganizationRole } from '../enums/organization-role.enum';
-
+/**
+ * The caller, from the access token. It carries identity only: permissions
+ * are loaded from the database per request (`AccessControlService`).
+ */
 export interface AuthenticatedUser {
   id: string;
   email: string;
-  globalRoles: GlobalRole[];
-  organizationRoles: Record<string, OrganizationRole[]>;
-  permissions: string[];
 }

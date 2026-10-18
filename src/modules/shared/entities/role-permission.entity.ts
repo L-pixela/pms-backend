@@ -32,6 +32,6 @@ export class RolePermissionEntity {
   @ManyToOne(() => PermissionEntity, { nullable: false, onDelete: 'CASCADE' })
   permission: PermissionEntity;
 
-  @CreateDateColumn({ type: 'timestamptz' })
+  @CreateDateColumn({ name: 'created_at', type: 'timestamptz' })
   createdAt: Date;
 }

@@ -1,166 +1,146 @@
 import 'reflect-metadata';
-import { AppDataSource } from './data-source';
-import { RoleEntity, RoleScope } from '../modules/shared/entities/role.entity';
+import * as bcrypt from 'bcrypt';
+import { In, IsNull, Not, type QueryRunner } from 'typeorm';
+import { AppDataSource, env } from './data-source';
+import { RoleEntity } from '../modules/shared/entities/role.entity';
 import { PermissionEntity } from '../modules/shared/entities/permission.entity';
 import { RolePermissionEntity } from '../modules/shared/entities/role-permission.entity';
-import { GlobalRole } from '../modules/shared/enums/global-role.enum';
-import { OrganizationRole } from '../modules/shared/enums/organization-role.enum';
-import { Permissions } from '../modules/shared/constants/permissions';
+import {
+  isAssignableToScope,
+  PERMISSION_CATALOG,
+} from '../modules/shared/constants/permissions';
+import {
+  SYSTEM_ROLE_DEFINITIONS,
+  SystemRoles,
+} from '../modules/shared/constants/system-roles';
+import { UserEntity } from '../modules/users/entities/user.entity';
+import { UserGlobalRoleEntity } from '../modules/users/entities/user-global-role.entity';
+
+const BCRYPT_COST = 12;
 
 async function seed() {
-  await AppDataSource.initialize();
-  console.log('🌱 Starting database seed...');
-
-  const queryRunner = AppDataSource.createQueryRunner();
-  await queryRunner.connect();
-  await queryRunner.startTransaction();
+  let queryRunner: QueryRunner | undefined;
 
   try {
+    await AppDataSource.initialize();
+    console.log('🌱 Starting database seed...');
+
+    queryRunner = AppDataSource.createQueryRunner();
+    await queryRunner.connect();
+    await queryRunner.startTransaction();
+
     const roleRepo = queryRunner.manager.getRepository(RoleEntity);
     const permRepo = queryRunner.manager.getRepository(PermissionEntity);
     const rolePermRepo =
       queryRunner.manager.getRepository(RolePermissionEntity);
 
-    // 1. Seed Roles
-    console.log('Seeding roles...');
-    const rolesToSeed = [
-      {
-        key: GlobalRole.PLATFORM_ADMIN,
-        name: 'Platform Admin',
-        scope: RoleScope.GLOBAL,
-      },
-      {
-        key: OrganizationRole.PROPERTY_MANAGER,
-        name: 'Property Manager',
-        scope: RoleScope.ORGANIZATION,
-      },
-      {
-        key: OrganizationRole.TENANT,
-        name: 'Tenant',
-        scope: RoleScope.ORGANIZATION,
-      },
-      {
-        key: OrganizationRole.VIEWER,
-        name: 'Viewer',
-        scope: RoleScope.ORGANIZATION,
-      },
-    ];
-
-    const rolesMap = new Map<string, RoleEntity>();
-    for (const r of rolesToSeed) {
-      let role = await roleRepo.findOne({ where: { key: r.key } });
-      if (!role) {
-        role = roleRepo.create(r);
-        await roleRepo.save(role);
-      }
-      rolesMap.set(r.key, role);
-    }
-
-    // 2. Seed Permissions
+    // 1. Permissions: one row per entry in the code catalog.
     console.log('Seeding permissions...');
-    const permsToSeed = Object.values(Permissions).map((key) => ({
-      key,
-      description: `Permission to ${key.replace('.', ' ')}`,
-    }));
-
     const permsMap = new Map<string, PermissionEntity>();
-    for (const p of permsToSeed) {
-      let perm = await permRepo.findOne({ where: { key: p.key } });
+    for (const [key, { description }] of Object.entries(PERMISSION_CATALOG)) {
+      let perm = await permRepo.findOne({ where: { key } });
       if (!perm) {
-        perm = permRepo.create(p);
-        await permRepo.save(perm);
+        perm = permRepo.create({ key, description });
       }
-      permsMap.set(p.key, perm);
+      perm.description = description;
+      permsMap.set(key, await permRepo.save(perm));
     }
 
-    // 3. Map Permissions to Roles
-    console.log('Mapping permissions to roles...');
-
-    // Platform Admin gets everything
-    const adminRole = rolesMap.get(GlobalRole.PLATFORM_ADMIN)!;
-    for (const perm of permsMap.values()) {
-      const exists = await rolePermRepo.findOne({
-        where: { roleId: adminRole.id, permissionId: perm.id },
-      });
-      if (!exists) {
-        await rolePermRepo.save(
-          rolePermRepo.create({ role: adminRole, permission: perm }),
-        );
+    // 2. System roles: created, and their permissions set exactly as defined
+    //    in code. They are read-only through the API, so this never
+    //    overwrites an admin's edits.
+    console.log('Syncing system roles...');
+    const rolesMap = new Map<string, RoleEntity>();
+    for (const definition of SYSTEM_ROLE_DEFINITIONS) {
+      for (const permission of definition.permissions) {
+        if (!isAssignableToScope(permission, definition.scope)) {
+          throw new Error(
+            `System role "${definition.key}" cannot hold "${permission}" (${definition.scope} scope).`,
+          );
+        }
       }
-    }
 
-    // Property Manager gets organization stuff
-    const pmRole = rolesMap.get(OrganizationRole.PROPERTY_MANAGER)!;
-    const pmPermKeys = [
-      Permissions.ORGANIZATIONS_READ,
-      Permissions.ORGANIZATIONS_MANAGE,
-      Permissions.PROPERTIES_READ,
-      Permissions.PROPERTIES_MANAGE,
-      Permissions.LEASES_READ,
-      Permissions.LEASES_MANAGE,
-      Permissions.PAYMENTS_READ,
-      Permissions.PAYMENTS_MANAGE,
-    ];
-    for (const key of pmPermKeys) {
-      const perm = permsMap.get(key)!;
-      const exists = await rolePermRepo.findOne({
-        where: { roleId: pmRole.id, permissionId: perm.id },
+      let role = await roleRepo.findOne({
+        where: { key: definition.key, organizationId: IsNull() },
       });
-      if (!exists) {
-        await rolePermRepo.save(
-          rolePermRepo.create({ role: pmRole, permission: perm }),
-        );
+      if (!role) {
+        role = roleRepo.create({ key: definition.key, organizationId: null });
       }
-    }
+      role.name = definition.name;
+      role.description = definition.description;
+      role.scope = definition.scope;
+      role.isSystem = true;
+      role = await roleRepo.save(role);
+      rolesMap.set(definition.key, role);
 
-    // Tenant gets read-only to their stuff
-    const tenantRole = rolesMap.get(OrganizationRole.TENANT)!;
-    const tenantPermKeys = [
-      Permissions.ORGANIZATIONS_READ,
-      Permissions.PROPERTIES_READ,
-      Permissions.LEASES_READ,
-      Permissions.PAYMENTS_READ,
-    ];
-    for (const key of tenantPermKeys) {
-      const perm = permsMap.get(key)!;
-      const exists = await rolePermRepo.findOne({
-        where: { roleId: tenantRole.id, permissionId: perm.id },
+      const wanted = definition.permissions.map((key) => permsMap.get(key)!.id);
+      await rolePermRepo.delete({
+        roleId: role.id,
+        ...(wanted.length && { permissionId: Not(In(wanted)) }),
       });
-      if (!exists) {
-        await rolePermRepo.save(
-          rolePermRepo.create({ role: tenantRole, permission: perm }),
-        );
+      for (const permissionId of wanted) {
+        const exists = await rolePermRepo.exists({
+          where: { roleId: role.id, permissionId },
+        });
+        if (!exists) {
+          await rolePermRepo.insert({ roleId: role.id, permissionId });
+        }
       }
     }
 
-    // Viewer gets read-only
-    const viewerRole = rolesMap.get(OrganizationRole.VIEWER)!;
-    const viewerPermKeys = [
-      Permissions.ORGANIZATIONS_READ,
-      Permissions.PROPERTIES_READ,
-    ];
-    for (const key of viewerPermKeys) {
-      const perm = permsMap.get(key)!;
-      const exists = await rolePermRepo.findOne({
-        where: { roleId: viewerRole.id, permissionId: perm.id },
-      });
-      if (!exists) {
-        await rolePermRepo.save(
-          rolePermRepo.create({ role: viewerRole, permission: perm }),
+    // 3. Seed the platform admin user (optional)
+    const adminRole = rolesMap.get(SystemRoles.PLATFORM_ADMIN)!;
+    if (env.SEED_ADMIN_EMAIL && env.SEED_ADMIN_PASSWORD) {
+      console.log('Seeding platform admin user...');
+      const userRepo = queryRunner.manager.getRepository(UserEntity);
+      const userRoleRepo =
+        queryRunner.manager.getRepository(UserGlobalRoleEntity);
+      const email = env.SEED_ADMIN_EMAIL.trim().toLowerCase();
+
+      let admin = await userRepo.findOne({ where: { email } });
+      if (!admin) {
+        admin = await userRepo.save(
+          userRepo.create({
+            email,
+            passwordHash: await bcrypt.hash(
+              env.SEED_ADMIN_PASSWORD,
+              BCRYPT_COST,
+            ),
+            isActive: true,
+          }),
         );
       }
+
+      const exists = await userRoleRepo.findOne({
+        where: { userId: admin.id, roleId: adminRole.id },
+      });
+      if (!exists) {
+        await userRoleRepo.save(
+          userRoleRepo.create({ userId: admin.id, roleId: adminRole.id }),
+        );
+      }
+    } else {
+      console.log(
+        'Skipping platform admin user (SEED_ADMIN_EMAIL / SEED_ADMIN_PASSWORD not set).',
+      );
     }
 
     await queryRunner.commitTransaction();
     console.log('✅ Seed completed successfully!');
   } catch (err) {
-    console.error('❌ Seed failed:', err);
-    await queryRunner.rollbackTransaction();
-    process.exit(1);
+    if (queryRunner?.isTransactionActive) {
+      await queryRunner.rollbackTransaction();
+    }
+    throw err;
   } finally {
-    await queryRunner.release();
-    await AppDataSource.destroy();
+    await queryRunner?.release();
+    if (AppDataSource.isInitialized) {
+      await AppDataSource.destroy();
+    }
   }
 }
 
-seed();
+seed().catch((err) => {
+  console.error('❌ Seed failed:', err);
+  process.exitCode = 1;
+});

@@ -1,54 +1,139 @@
-import { Injectable, UnauthorizedException } from '@nestjs/common';
+import {
+  ConflictException,
+  Injectable,
+  UnauthorizedException,
+} from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
-import { randomUUID } from 'node:crypto';
+import { InjectRepository } from '@nestjs/typeorm';
+import * as bcrypt from 'bcrypt';
+import { createHash, randomUUID } from 'node:crypto';
+import { IsNull, Repository } from 'typeorm';
+import { isUniqueViolation } from '../database/postgres-errors';
+import { UserEntity } from '../modules/users/entities/user.entity';
 import type { LoginDto } from './dto/login.dto';
 import type { RefreshTokenDto } from './dto/refresh-token.dto';
+import type { RegisterDto } from './dto/register.dto';
+import { RefreshTokenSessionEntity } from './entities/refresh-token-session.entity';
 import type {
   AccessTokenPayload,
   RefreshTokenPayload,
 } from './interfaces/token-payload.interface';
 import type { AuthTokenResponse } from './types/auth-token-response.type';
 
+const BCRYPT_COST = 12;
+
 @Injectable()
 export class AuthService {
-  private readonly refreshSessions = new Map<string, string>();
+  // Compared against when the email is unknown, so login takes the same time
+  // whether or not an account exists.
+  private readonly dummyPasswordHash = bcrypt.hashSync(
+    randomUUID(),
+    BCRYPT_COST,
+  );
 
   constructor(
     private readonly jwtService: JwtService,
     private readonly configService: ConfigService,
+    @InjectRepository(UserEntity)
+    private readonly userRepository: Repository<UserEntity>,
+    @InjectRepository(RefreshTokenSessionEntity)
+    private readonly sessionRepository: Repository<RefreshTokenSessionEntity>,
   ) {}
 
-  async login(payload: LoginDto): Promise<AuthTokenResponse> {
-    const organizationRoles = Object.fromEntries(
-      (payload.organizationRoles ?? []).map((entry) => [
-        entry.organizationId,
-        entry.roles,
-      ]),
+  async register({
+    email,
+    password,
+  }: RegisterDto): Promise<{ id: string; email: string }> {
+    const passwordHash = await bcrypt.hash(password, BCRYPT_COST);
+
+    try {
+      const user = await this.userRepository.save(
+        this.userRepository.create({
+          email: this.normalizeEmail(email),
+          passwordHash,
+          isActive: true,
+        }),
+      );
+
+      return { id: user.id, email: user.email };
+    } catch (error) {
+      if (isUniqueViolation(error)) {
+        throw new ConflictException('Email is already registered.');
+      }
+      throw error;
+    }
+  }
+
+  async login({ email, password }: LoginDto): Promise<AuthTokenResponse> {
+    const user = await this.userRepository.findOne({
+      where: { email: this.normalizeEmail(email) },
+    });
+
+    const passwordMatches = await bcrypt.compare(
+      password,
+      user?.passwordHash ?? this.dummyPasswordHash,
     );
 
-    return this.issueTokenPair({
-      sub: payload.userId,
-      email: payload.email,
-      globalRoles: payload.globalRoles ?? [],
-      organizationRoles,
-      permissions: payload.permissions ?? [],
-      tokenType: 'access',
-    });
+    if (!user?.passwordHash || !passwordMatches || !user.isActive) {
+      throw new UnauthorizedException('Invalid credentials.');
+    }
+
+    return this.issueTokenPair(this.toAccessPayload(user));
   }
 
   async refresh({ refreshToken }: RefreshTokenDto): Promise<AuthTokenResponse> {
-    const jwtRefreshSecret =
-      this.configService.get<string>('JWT_REFRESH_SECRET') ??
-      'dev_refresh_secret';
+    const payload = await this.verifyRefreshToken(refreshToken);
 
+    // Revoke and check the session in one statement so two concurrent
+    // refreshes with the same token cannot both succeed.
+    const result = await this.sessionRepository
+      .createQueryBuilder()
+      .update()
+      .set({ revokedAt: () => 'now()' })
+      .where('session_id = :sessionId', { sessionId: payload.sessionId })
+      .andWhere('user_id = :userId', { userId: payload.sub })
+      .andWhere('token_hash = :tokenHash', {
+        tokenHash: this.hashToken(refreshToken),
+      })
+      .andWhere('revoked_at IS NULL')
+      .andWhere('expires_at > now()')
+      .execute();
+
+    if (result.affected !== 1) {
+      throw new UnauthorizedException('Refresh session is no longer valid.');
+    }
+
+    return this.issueTokenPair(
+      this.toAccessPayload(await this.loadActiveUser(payload.sub)),
+    );
+  }
+
+  async logout({ refreshToken }: RefreshTokenDto): Promise<{ success: true }> {
+    const payload = await this.verifyRefreshToken(refreshToken);
+
+    await this.sessionRepository.update(
+      {
+        sessionId: payload.sessionId,
+        userId: payload.sub,
+        revokedAt: IsNull(),
+      },
+      { revokedAt: new Date() },
+    );
+
+    return { success: true };
+  }
+
+  private async verifyRefreshToken(
+    refreshToken: string,
+  ): Promise<RefreshTokenPayload> {
     let payload: RefreshTokenPayload;
 
     try {
       payload = await this.jwtService.verifyAsync<RefreshTokenPayload>(
         refreshToken,
         {
-          secret: jwtRefreshSecret,
+          secret: this.configService.getOrThrow<string>('JWT_REFRESH_SECRET'),
         },
       );
     } catch {
@@ -59,84 +144,78 @@ export class AuthService {
       throw new UnauthorizedException('Provided token is not a refresh token.');
     }
 
-    const activeSessionUserId = this.refreshSessions.get(payload.sessionId);
-    if (!activeSessionUserId || activeSessionUserId !== payload.sub) {
-      throw new UnauthorizedException('Refresh session is no longer valid.');
-    }
-
-    this.refreshSessions.delete(payload.sessionId);
-
-    return this.issueTokenPair({
-      sub: payload.sub,
-      email: payload.email,
-      globalRoles: payload.globalRoles,
-      organizationRoles: payload.organizationRoles,
-      permissions: payload.permissions,
-      tokenType: 'access',
-    });
+    return payload;
   }
 
-  async logout({ refreshToken }: RefreshTokenDto): Promise<{ success: true }> {
-    const jwtRefreshSecret =
-      this.configService.get<string>('JWT_REFRESH_SECRET') ??
-      'dev_refresh_secret';
+  private async loadActiveUser(userId: string): Promise<UserEntity> {
+    const user = await this.userRepository.findOne({ where: { id: userId } });
 
-    const payload = await this.jwtService.verifyAsync<RefreshTokenPayload>(
-      refreshToken,
-      {
-        secret: jwtRefreshSecret,
-      },
-    );
+    if (!user?.isActive) {
+      throw new UnauthorizedException('User is inactive or no longer exists.');
+    }
 
-    this.refreshSessions.delete(payload.sessionId);
+    return user;
+  }
 
-    return { success: true };
+  private toAccessPayload(user: UserEntity): AccessTokenPayload {
+    return { sub: user.id, email: user.email, tokenType: 'access' };
   }
 
   private async issueTokenPair(
     accessPayload: AccessTokenPayload,
   ): Promise<AuthTokenResponse> {
-    const accessTokenExpiresIn = Number(
-      this.configService.get<string>('JWT_ACCESS_EXPIRES_IN_SECONDS') ?? 900,
+    const refreshTokenExpiresIn = this.configService.getOrThrow<number>(
+      'JWT_REFRESH_EXPIRES_IN_SECONDS',
     );
-    const refreshTokenExpiresIn = Number(
-      this.configService.get<string>('JWT_REFRESH_EXPIRES_IN_SECONDS') ??
-        604800,
-    );
-    const jwtRefreshSecret =
-      this.configService.get<string>('JWT_REFRESH_SECRET') ??
-      'dev_refresh_secret';
 
     const sessionId = randomUUID();
-    this.refreshSessions.set(sessionId, accessPayload.sub);
-
     const refreshPayload: RefreshTokenPayload = {
       sub: accessPayload.sub,
-      email: accessPayload.email,
-      globalRoles: accessPayload.globalRoles,
-      organizationRoles: accessPayload.organizationRoles,
-      permissions: accessPayload.permissions,
       tokenType: 'refresh',
       sessionId,
     };
 
     const [accessToken, refreshToken] = await Promise.all([
-      this.jwtService.signAsync(accessPayload, {
-        expiresIn: Number.isFinite(accessTokenExpiresIn)
-          ? accessTokenExpiresIn
-          : 900,
-      }),
+      this.jwtService.signAsync(accessPayload),
       this.jwtService.signAsync(refreshPayload, {
-        secret: jwtRefreshSecret,
-        expiresIn: Number.isFinite(refreshTokenExpiresIn)
-          ? refreshTokenExpiresIn
-          : 604800,
+        secret: this.configService.getOrThrow<string>('JWT_REFRESH_SECRET'),
+        expiresIn: refreshTokenExpiresIn,
       }),
     ]);
+
+    await this.pruneSessions(accessPayload.sub);
+    await this.sessionRepository.insert({
+      sessionId,
+      userId: accessPayload.sub,
+      tokenHash: this.hashToken(refreshToken),
+      expiresAt: new Date(Date.now() + refreshTokenExpiresIn * 1000),
+      revokedAt: null,
+    });
 
     return {
       accessToken,
       refreshToken,
     };
+  }
+
+  /** Drops the user's sessions that can never be used again. */
+  private async pruneSessions(userId: string): Promise<void> {
+    await this.sessionRepository
+      .createQueryBuilder()
+      .delete()
+      .where('user_id = :userId', { userId })
+      .andWhere('(expires_at <= now() OR revoked_at IS NOT NULL)')
+      .execute();
+  }
+
+  // Refresh tokens are long, high-entropy JWTs, so a fast hash is enough.
+  // bcrypt would only see the first 72 bytes, which are nearly identical
+  // across tokens.
+  private hashToken(token: string): string {
+    return createHash('sha256').update(token).digest('hex');
+  }
+
+  private normalizeEmail(email: string): string {
+    return email.trim().toLowerCase();
   }
 }

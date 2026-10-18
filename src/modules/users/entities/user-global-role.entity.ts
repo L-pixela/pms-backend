@@ -32,6 +32,6 @@ export class UserGlobalRoleEntity {
   @ManyToOne(() => RoleEntity, { nullable: false, onDelete: 'CASCADE' })
   role: RoleEntity;
 
-  @CreateDateColumn({ type: 'timestamptz' })
+  @CreateDateColumn({ name: 'created_at', type: 'timestamptz' })
   createdAt: Date;
 }
