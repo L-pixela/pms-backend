@@ -2,9 +2,9 @@ import 'reflect-metadata';
 import * as bcrypt from 'bcrypt';
 import { In, IsNull, Not, type QueryRunner } from 'typeorm';
 import { AppDataSource, env } from './data-source';
-import { RoleEntity } from '../modules/shared/entities/role.entity';
-import { PermissionEntity } from '../modules/shared/entities/permission.entity';
-import { RolePermissionEntity } from '../modules/shared/entities/role-permission.entity';
+import { RoleEntity } from './typeorm/entities/role.entity';
+import { PermissionEntity } from './typeorm/entities/permission.entity';
+import { RolePermissionEntity } from './typeorm/entities/role-permission.entity';
 import {
   isAssignableToScope,
   PERMISSION_CATALOG,
@@ -13,8 +13,8 @@ import {
   SYSTEM_ROLE_DEFINITIONS,
   SystemRoles,
 } from '../modules/shared/constants/system-roles';
-import { UserEntity } from '../modules/users/entities/user.entity';
-import { UserGlobalRoleEntity } from '../modules/users/entities/user-global-role.entity';
+import { UserEntity } from './typeorm/entities/user.entity';
+import { UserGlobalRoleEntity } from './typeorm/entities/user-global-role.entity';
 
 const BCRYPT_COST = 12;
 

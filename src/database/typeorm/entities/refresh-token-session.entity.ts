@@ -8,12 +8,10 @@ import {
   PrimaryGeneratedColumn,
   UpdateDateColumn,
 } from 'typeorm';
-import { UserEntity } from '../../users/entities/user.entity';
-import { OrganizationEntity } from './organization.entity';
+import { UserEntity } from './user.entity';
 
-@Entity({ name: 'organization_memberships' })
-@Index(['userId', 'organizationId'], { unique: true })
-export class OrganizationMembershipEntity {
+@Entity({ name: 'refresh_token_sessions' })
+export class RefreshTokenSessionEntity {
   @PrimaryGeneratedColumn('uuid')
   id: string;
 
@@ -25,13 +23,18 @@ export class OrganizationMembershipEntity {
   @ManyToOne(() => UserEntity, { nullable: false, onDelete: 'CASCADE' })
   user: UserEntity;
 
-  @Index()
-  @Column({ name: 'organization_id', type: 'uuid' })
-  organizationId: string;
+  @Index({ unique: true })
+  @Column({ name: 'session_id', type: 'uuid' })
+  sessionId: string;
 
-  @JoinColumn({ name: 'organization_id' })
-  @ManyToOne(() => OrganizationEntity, { nullable: false, onDelete: 'CASCADE' })
-  organization: OrganizationEntity;
+  @Column({ name: 'token_hash', type: 'varchar', length: 255 })
+  tokenHash: string;
+
+  @Column({ name: 'expires_at', type: 'timestamptz' })
+  expiresAt: Date;
+
+  @Column({ name: 'revoked_at', type: 'timestamptz', nullable: true })
+  revokedAt: Date | null;
 
   @CreateDateColumn({ name: 'created_at', type: 'timestamptz' })
   createdAt: Date;

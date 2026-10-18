@@ -47,28 +47,48 @@ src/
                           APP_GUARDs in order: JwtAuthGuard → PermissionsGuard
   config/env.validation.ts  EnvironmentVariables class + validate(); the single source of env defaults
   auth/                   register / login / refresh / logout, JwtStrategy, JwtAuthGuard, DTOs,
-                          RefreshTokenSessionEntity. Tokens carry identity only (no roles/permissions)
+                          domain/ (RefreshTokenSession), repositories/ (session port).
+                          Tokens carry identity only (no roles/permissions)
   database/
     data-source.ts        standalone DataSource for the CLI and seed
     entities.ts           ALL_ENTITIES registry (used by both configs)
+    errors.ts             DuplicateKeyError (DB-agnostic)
+    repository.interface.ts  generic IRepository<T, ID> (findById / exists / delete)
+    typeorm/              the ONLY place TypeORM is allowed: entities/ (all *Entity classes), mappers.ts,
+                          repositories/ (BaseTypeOrmRepository + one TypeOrm*Repository per port),
+                          postgres-errors.ts, typeorm-database.module.ts (@Global: forRootAsync,
+                          forFeature, token bindings)
     migrations/           TypeORM migrations (InitialSchema, DynamicRoles)
-    postgres-errors.ts    isUniqueViolation()
     seed.ts               idempotent seed of permissions, system roles + their permissions, and the admin user
   test-utils/             helpers for unit tests (fake ExecutionContext)
   modules/
     shared/               cross-cutting RBAC: SharedModule (AccessControlService), constants/permissions.ts
                           (catalog), constants/system-roles.ts, decorators, PermissionsGuard, organization-context.ts,
-                          Role / Permission / RolePermission entities, AuthenticatedUser interface
-    roles/                RolesModule: /permissions, /roles, /organizations/:organizationId/roles,
+                          domain/role.ts (Role, RoleScope), repositories/ (role + permission ports),
+                          AuthenticatedUser interface
+    roles/                RolesModule (repositories/: role-assignment port): /permissions, /roles, /organizations/:organizationId/roles,
                           user + member role assignment (RolesService, RoleAssignmentsService)
-    users/                UsersController (/users/me, /users/me/permissions, /users), UsersService, User + UserGlobalRole entities
-    organizations/        entities only (Organization, Membership, MembershipRole), no module yet
+    users/                UsersController (/users/me, /users/me/permissions, /users), UsersService, domain/user.ts, repositories/ (user port)
+    organizations/        domain models + repository ports (Organization, Membership), no module yet
 ```
 
 ## Code patterns
 
 - **Feature modules** live in `src/modules/<feature>/` with `<feature>.module.ts`, `.controller.ts`, `.service.ts`, `entities/` and `dto/`. Auth is the exception and lives in `src/auth/`.
-- **Entities** use the `*Entity` class suffix, a plural snake_case table name (`@Entity({ name: 'organization_memberships' })`), `uuid` primary keys, snake_case column names through `name:` on camelCase properties, `timestamptz` `createdAt`/`updatedAt`, and an explicit `*Id` FK column next to the `@ManyToOne` + `@JoinColumn` relation. **Register every new entity in `src/database/entities.ts`.**
+- **Persistence is behind repository interfaces.** Services (and everything outside `src/database/`) depend on
+  `I*Repository` interfaces and plain domain models, never on TypeORM, `@nestjs/typeorm` or a `*Entity` class.
+  ESLint (`no-restricted-imports`) enforces this. For a new aggregate:
+  1. Domain model: plain interface in `modules/<feature>/domain/`.
+  2. Port: `modules/<feature>/repositories/<name>.repository.interface.ts` with `I<Name>Repository`
+     (extend `IRepository<T>` when it has a single `id`) and a `Symbol` token (`<NAME>_REPOSITORY`).
+     Name methods for intent (`findVisibleToOrganization`), not `find(where)`.
+  3. Implementation: `TypeOrm<Name>Repository` in `src/database/typeorm/repositories/` (extend
+     `BaseTypeOrmRepository<Entity, Domain>`, map with `mappers.ts`, translate unique violations into
+     `DuplicateKeyError`). Keep transactions inside repository methods.
+  4. Bind the token in `TypeOrmDatabaseModule` and export it.
+  5. Inject with `@Inject(TOKEN) private readonly x: IXRepository` and catch `DuplicateKeyError`, not driver errors.
+  Unit-test services with `jest.Mocked<IXRepository>`.
+- **Entities** live in `src/database/typeorm/entities/` and use the `*Entity` class suffix, a plural snake_case table name (`@Entity({ name: 'organization_memberships' })`), `uuid` primary keys, snake_case column names through `name:` on camelCase properties, `timestamptz` `createdAt`/`updatedAt`, and an explicit `*Id` FK column next to the `@ManyToOne` + `@JoinColumn` relation. **Register every new entity in `src/database/entities.ts`.**
 - **DTOs** are classes with `class-validator` decorators. Use `@ValidateNested` + `@Type(() => X)` for nested objects. The global pipe strips unknown properties, so every accepted field needs a decorator.
 - **RBAC** (details in `TRACKING.md` → Authorization Model):
   - Authorize **only** with `@RequirePermissions(...)` (all listed are required). Never check a role key in code: roles are data that admins and orgs create at runtime.
@@ -98,7 +118,7 @@ src/
 | `/organizations/:organizationId/roles` CRUD, `GET/PUT .../members/:userId/roles` | `roles.read` / `roles.manage` in that org |
 | DB schema | 9 entities; `InitialSchema` + `DynamicRoles` migrations, verified against Postgres 16 |
 | Seed | 12 permissions, 4 system roles (`platform_admin`, `property_manager`, `tenant`, `viewer`), optional admin |
-| Tests | Unit specs for `PermissionsGuard`, `JwtAuthGuard`, `AuthService`; e2e auth + RBAC (needs a migrated + seeded DB) |
+| Tests | Unit specs for `PermissionsGuard`, `JwtAuthGuard`, `AuthService`, `RolesService` (repositories mocked); e2e auth + RBAC (needs a migrated + seeded DB) |
 | Organizations (CRUD, members), properties, leases, payments | Not started (Phases 3–6). Memberships exist only as rows for now |
 
 Access tokens are signed with `JWT_ACCESS_SECRET` (default 900s) and carry only `sub` and `email`. Refresh tokens are signed with `JWT_REFRESH_SECRET` (default 604800s) and carry only `sub` and `sessionId`. Both carry `tokenType` (`access` / `refresh`), which `JwtStrategy` and `AuthService` check. Sessions store a SHA-256 hash of the refresh token (not bcrypt: it truncates at 72 bytes).

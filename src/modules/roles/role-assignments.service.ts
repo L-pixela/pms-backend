@@ -1,16 +1,29 @@
 import {
   BadRequestException,
+  Inject,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
-import { InjectDataSource, InjectRepository } from '@nestjs/typeorm';
-import { DataSource, FindOptionsWhere, In, IsNull, Repository } from 'typeorm';
-import { OrganizationMembershipRoleEntity } from '../organizations/entities/organization-membership-role.entity';
-import { OrganizationMembershipEntity } from '../organizations/entities/organization-membership.entity';
-import { RoleEntity, RoleScope } from '../shared/entities/role.entity';
+import {
+  MEMBERSHIP_REPOSITORY,
+  type IMembershipRepository,
+} from '../organizations/repositories/membership.repository.interface';
+import type { OrganizationMembership } from '../organizations/domain/organization-membership';
+import { RoleScope, type Role } from '../shared/domain/role';
+import {
+  ROLE_REPOSITORY,
+  type IRoleRepository,
+  type RoleCriteria,
+} from '../shared/repositories/role.repository.interface';
 import { AccessControlService } from '../shared/services/access-control.service';
-import { UserGlobalRoleEntity } from '../users/entities/user-global-role.entity';
-import { UserEntity } from '../users/entities/user.entity';
+import {
+  USER_REPOSITORY,
+  type IUserRepository,
+} from '../users/repositories/user.repository.interface';
+import {
+  ROLE_ASSIGNMENT_REPOSITORY,
+  type IRoleAssignmentRepository,
+} from './repositories/role-assignment.repository.interface';
 import { RolesService } from './roles.service';
 
 export interface RoleSummary {
@@ -30,17 +43,14 @@ export interface MembershipRoles {
 @Injectable()
 export class RoleAssignmentsService {
   constructor(
-    @InjectDataSource() private readonly dataSource: DataSource,
-    @InjectRepository(RoleEntity)
-    private readonly roleRepository: Repository<RoleEntity>,
-    @InjectRepository(UserEntity)
-    private readonly userRepository: Repository<UserEntity>,
-    @InjectRepository(UserGlobalRoleEntity)
-    private readonly userGlobalRoleRepository: Repository<UserGlobalRoleEntity>,
-    @InjectRepository(OrganizationMembershipEntity)
-    private readonly membershipRepository: Repository<OrganizationMembershipEntity>,
-    @InjectRepository(OrganizationMembershipRoleEntity)
-    private readonly membershipRoleRepository: Repository<OrganizationMembershipRoleEntity>,
+    @Inject(ROLE_REPOSITORY)
+    private readonly roleRepository: IRoleRepository,
+    @Inject(USER_REPOSITORY)
+    private readonly userRepository: IUserRepository,
+    @Inject(MEMBERSHIP_REPOSITORY)
+    private readonly membershipRepository: IMembershipRepository,
+    @Inject(ROLE_ASSIGNMENT_REPOSITORY)
+    private readonly roleAssignmentRepository: IRoleAssignmentRepository,
     private readonly rolesService: RolesService,
     private readonly accessControlService: AccessControlService,
   ) {}
@@ -56,34 +66,20 @@ export class RoleAssignmentsService {
     roleIds: string[],
   ): Promise<RoleSummary[]> {
     await this.assertUserExists(userId);
-    await this.findAssignableRoles(roleIds, {
-      organizationId: IsNull(),
-      scope: RoleScope.GLOBAL,
-    });
+    await this.findAssignableRoles(roleIds, [
+      { organizationId: null, scope: RoleScope.GLOBAL },
+    ]);
 
-    const current = await this.userGlobalRoleRepository.find({
-      where: { userId },
-    });
-    const { added, removed } = this.diff(
-      current.map((row) => row.roleId),
-      roleIds,
-    );
+    const current =
+      await this.roleAssignmentRepository.listGlobalRoleIds(userId);
+    const { added, removed } = this.diff(current, roleIds);
     await this.assertCanChange(callerId, null, [...added, ...removed]);
 
-    await this.dataSource.transaction(async (manager) => {
-      if (removed.length) {
-        await manager.delete(UserGlobalRoleEntity, {
-          userId,
-          roleId: In(removed),
-        });
-      }
-      if (added.length) {
-        await manager.insert(
-          UserGlobalRoleEntity,
-          added.map((roleId) => ({ userId, roleId })),
-        );
-      }
-    });
+    await this.roleAssignmentRepository.replaceGlobalRoles(
+      userId,
+      added,
+      removed,
+    );
 
     return this.loadGlobalRoles(userId);
   }
@@ -105,36 +101,24 @@ export class RoleAssignmentsService {
     const membership = await this.findMembership(organizationId, userId);
     // Platform templates or this org's own roles; never another org's.
     await this.findAssignableRoles(roleIds, [
-      { organizationId: IsNull(), scope: RoleScope.ORGANIZATION },
+      { organizationId: null, scope: RoleScope.ORGANIZATION },
       { organizationId },
     ]);
 
-    const current = await this.membershipRoleRepository.find({
-      where: { membershipId: membership.id },
-    });
-    const { added, removed } = this.diff(
-      current.map((row) => row.roleId),
-      roleIds,
+    const current = await this.roleAssignmentRepository.listMembershipRoleIds(
+      membership.id,
     );
+    const { added, removed } = this.diff(current, roleIds);
     await this.assertCanChange(callerId, organizationId, [
       ...added,
       ...removed,
     ]);
 
-    await this.dataSource.transaction(async (manager) => {
-      if (removed.length) {
-        await manager.delete(OrganizationMembershipRoleEntity, {
-          membershipId: membership.id,
-          roleId: In(removed),
-        });
-      }
-      if (added.length) {
-        await manager.insert(
-          OrganizationMembershipRoleEntity,
-          added.map((roleId) => ({ membershipId: membership.id, roleId })),
-        );
-      }
-    });
+    await this.roleAssignmentRepository.replaceMembershipRoles(
+      membership.id,
+      added,
+      removed,
+    );
 
     return this.loadMembershipRoles(membership.id);
   }
@@ -144,72 +128,29 @@ export class RoleAssignmentsService {
     globalRoles: RoleSummary[];
     organizations: MembershipRoles[];
   }> {
-    const [globalRoles, rows] = await Promise.all([
+    const [globalRoles, memberships] = await Promise.all([
       this.loadGlobalRoles(userId),
-      this.membershipRepository
-        .createQueryBuilder('membership')
-        .leftJoin(
-          OrganizationMembershipRoleEntity,
-          'membershipRole',
-          'membershipRole.membershipId = membership.id',
-        )
-        .leftJoin('membershipRole.role', 'role')
-        .select('membership.organizationId', 'organizationId')
-        .addSelect('role.id', 'id')
-        .addSelect('role.key', 'key')
-        .addSelect('role.name', 'name')
-        .addSelect('role.scope', 'scope')
-        .addSelect('role.organizationId', 'roleOrganizationId')
-        .where('membership.userId = :userId', { userId })
-        .orderBy('membership.createdAt')
-        .addOrderBy('role.key')
-        .getRawMany<{
-          organizationId: string;
-          id: string | null;
-          key: string;
-          name: string;
-          scope: RoleScope;
-          roleOrganizationId: string | null;
-        }>(),
+      this.roleAssignmentRepository.listUserOrganizationRoles(userId),
     ]);
-
-    const organizations = new Map<string, RoleSummary[]>();
-    for (const row of rows) {
-      const roles = organizations.get(row.organizationId) ?? [];
-      organizations.set(row.organizationId, roles);
-      // A membership without roles still shows up, with an empty list.
-      if (row.id) {
-        roles.push({
-          id: row.id,
-          key: row.key,
-          name: row.name,
-          scope: row.scope,
-          organizationId: row.roleOrganizationId,
-        });
-      }
-    }
 
     return {
       globalRoles,
-      organizations: [...organizations].map(([organizationId, roles]) => ({
+      organizations: memberships.map(({ organizationId, roles }) => ({
         organizationId,
-        roles,
+        roles: roles.map((role) => this.toSummary(role)),
       })),
     };
   }
 
   private async findAssignableRoles(
     roleIds: string[],
-    where: FindOptionsWhere<RoleEntity> | FindOptionsWhere<RoleEntity>[],
-  ): Promise<RoleEntity[]> {
+    criteria: RoleCriteria[],
+  ): Promise<Role[]> {
     if (!roleIds.length) {
       return [];
     }
 
-    const scopes = Array.isArray(where) ? where : [where];
-    const roles = await this.roleRepository.find({
-      where: scopes.map((scope) => ({ ...scope, id: In(roleIds) })),
-    });
+    const roles = await this.roleRepository.findByIds(roleIds, criteria);
 
     if (roles.length !== roleIds.length) {
       const found = new Set(roles.map((role) => role.id));
@@ -249,7 +190,7 @@ export class RoleAssignmentsService {
   }
 
   private async assertUserExists(userId: string): Promise<void> {
-    if (!(await this.userRepository.exists({ where: { id: userId } }))) {
+    if (!(await this.userRepository.exists(userId))) {
       throw new NotFoundException('User not found.');
     }
   }
@@ -257,11 +198,13 @@ export class RoleAssignmentsService {
   private async findMembership(
     organizationId: string,
     userId: string,
-  ): Promise<OrganizationMembershipEntity> {
+  ): Promise<OrganizationMembership> {
     await this.rolesService.assertOrganizationExists(organizationId);
-    const membership = await this.membershipRepository.findOne({
-      where: { organizationId, userId },
-    });
+    const membership =
+      await this.membershipRepository.findByOrganizationAndUser(
+        organizationId,
+        userId,
+      );
 
     if (!membership) {
       throw new NotFoundException('User is not a member of this organization.');
@@ -271,26 +214,19 @@ export class RoleAssignmentsService {
   }
 
   private async loadGlobalRoles(userId: string): Promise<RoleSummary[]> {
-    const rows = await this.userGlobalRoleRepository.find({
-      where: { userId },
-      relations: { role: true },
-      order: { role: { key: 'ASC' } },
-    });
-    return rows.map((row) => this.toSummary(row.role));
+    const roles = await this.roleAssignmentRepository.listGlobalRoles(userId);
+    return roles.map((role) => this.toSummary(role));
   }
 
   private async loadMembershipRoles(
     membershipId: string,
   ): Promise<RoleSummary[]> {
-    const rows = await this.membershipRoleRepository.find({
-      where: { membershipId },
-      relations: { role: true },
-      order: { role: { key: 'ASC' } },
-    });
-    return rows.map((row) => this.toSummary(row.role));
+    const roles =
+      await this.roleAssignmentRepository.listMembershipRoles(membershipId);
+    return roles.map((role) => this.toSummary(role));
   }
 
-  private toSummary(role: RoleEntity): RoleSummary {
+  private toSummary(role: Role): RoleSummary {
     return {
       id: role.id,
       key: role.key,

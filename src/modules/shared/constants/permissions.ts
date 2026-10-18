@@ -1,4 +1,4 @@
-import { RoleScope } from '../entities/role.entity';
+import { RoleScope } from '../domain/role';
 
 /**
  * Every permission the code checks. Permissions are fixed in code because a

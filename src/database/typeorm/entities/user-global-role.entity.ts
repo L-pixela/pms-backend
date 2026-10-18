@@ -7,7 +7,7 @@ import {
   ManyToOne,
   PrimaryGeneratedColumn,
 } from 'typeorm';
-import { RoleEntity } from '../../shared/entities/role.entity';
+import { RoleEntity } from './role.entity';
 import { UserEntity } from './user.entity';
 
 @Entity({ name: 'user_global_roles' })
