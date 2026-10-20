@@ -1,7 +1,7 @@
 {
   "openapi": "3.0.0",
   "paths": {
-    "/": {
+    "/api": {
       "get": {
         "operationId": "AppController_getHello",
         "parameters": [],
@@ -24,7 +24,7 @@
         ]
       }
     },
-    "/auth/register": {
+    "/api/auth/register": {
       "post": {
         "operationId": "AuthController_register",
         "parameters": [],
@@ -77,7 +77,7 @@
         ]
       }
     },
-    "/auth/login": {
+    "/api/auth/login": {
       "post": {
         "operationId": "AuthController_login",
         "parameters": [],
@@ -130,7 +130,7 @@
         ]
       }
     },
-    "/auth/refresh": {
+    "/api/auth/refresh": {
       "post": {
         "operationId": "AuthController_refresh",
         "parameters": [],
@@ -183,7 +183,7 @@
         ]
       }
     },
-    "/auth/logout": {
+    "/api/auth/logout": {
       "post": {
         "operationId": "AuthController_logout",
         "parameters": [],
@@ -236,7 +236,7 @@
         ]
       }
     },
-    "/permissions": {
+    "/api/permissions": {
       "get": {
         "operationId": "PermissionsController_list",
         "parameters": [],
@@ -271,7 +271,7 @@
         ]
       }
     },
-    "/roles": {
+    "/api/roles": {
       "get": {
         "operationId": "RolesController_list",
         "parameters": [
@@ -415,7 +415,7 @@
         ]
       }
     },
-    "/roles/{roleId}": {
+    "/api/roles/{roleId}": {
       "get": {
         "operationId": "RolesController_get",
         "parameters": [
@@ -649,7 +649,7 @@
         ]
       }
     },
-    "/organizations/{organizationId}/roles": {
+    "/api/organizations/{organizationId}/roles": {
       "get": {
         "operationId": "OrganizationRolesController_list",
         "parameters": [
@@ -820,7 +820,7 @@
         ]
       }
     },
-    "/organizations/{organizationId}/roles/{roleId}": {
+    "/api/organizations/{organizationId}/roles/{roleId}": {
       "get": {
         "operationId": "OrganizationRolesController_get",
         "parameters": [
@@ -1081,7 +1081,7 @@
         ]
       }
     },
-    "/users/{userId}/roles": {
+    "/api/users/{userId}/roles": {
       "get": {
         "operationId": "UserRolesController_list",
         "parameters": [
@@ -1245,7 +1245,7 @@
         ]
       }
     },
-    "/organizations/{organizationId}/members/{userId}/roles": {
+    "/api/organizations/{organizationId}/members/{userId}/roles": {
       "get": {
         "operationId": "MemberRolesController_list",
         "parameters": [
@@ -1427,7 +1427,7 @@
         ]
       }
     },
-    "/users/me": {
+    "/api/users/me": {
       "get": {
         "operationId": "UsersController_getMe",
         "parameters": [],
@@ -1459,7 +1459,7 @@
         ]
       }
     },
-    "/users/me/permissions": {
+    "/api/users/me/permissions": {
       "get": {
         "operationId": "UsersController_getMyPermissions",
         "parameters": [
@@ -1512,7 +1512,7 @@
         ]
       }
     },
-    "/users": {
+    "/api/users": {
       "get": {
         "operationId": "UsersController_listUsers",
         "parameters": [],

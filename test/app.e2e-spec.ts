@@ -1,9 +1,10 @@
-import { INestApplication, ValidationPipe } from '@nestjs/common';
+import { INestApplication } from '@nestjs/common';
 import { Test, TestingModule } from '@nestjs/testing';
 import request from 'supertest';
 import { App } from 'supertest/types';
 import { DataSource, IsNull } from 'typeorm';
 import { AppModule } from './../src/app.module';
+import { configureApp } from './../src/config/app-setup';
 import { OrganizationMembershipRoleEntity } from './../src/database/typeorm/entities/organization-membership-role.entity';
 import { OrganizationMembershipEntity } from './../src/database/typeorm/entities/organization-membership.entity';
 import { OrganizationEntity } from './../src/database/typeorm/entities/organization.entity';
@@ -39,18 +40,18 @@ describe('Auth & RBAC (e2e)', () => {
   const http = () => request(app.getHttpServer());
 
   const register = (email: string) =>
-    http().post('/auth/register').send({ email, password });
+    http().post('/api/auth/register').send({ email, password });
 
   const login = async (email: string) => {
     const response = await http()
-      .post('/auth/login')
+      .post('/api/auth/login')
       .send({ email, password })
       .expect(200);
     return response.body as { accessToken: string; refreshToken: string };
   };
 
   const refresh = (refreshToken: string) =>
-    http().post('/auth/refresh').send({ refreshToken });
+    http().post('/api/auth/refresh').send({ refreshToken });
 
   /** Registers and logs in a user; returns its id and an access token. */
   const createUser = async (label: string) => {
@@ -108,14 +109,7 @@ describe('Auth & RBAC (e2e)', () => {
     }).compile();
 
     app = moduleFixture.createNestApplication();
-    // Mirror the global pipe from main.ts.
-    app.useGlobalPipes(
-      new ValidationPipe({
-        whitelist: true,
-        transform: true,
-        forbidUnknownValues: true,
-      }),
-    );
+    configureApp(app);
     await app.init();
     dataSource = app.get(DataSource);
   });
@@ -125,12 +119,12 @@ describe('Auth & RBAC (e2e)', () => {
   });
 
   describe('auth', () => {
-    it('GET / is public', () => {
-      return http().get('/').expect(200).expect('Hello World!');
+    it('GET /api is public', () => {
+      return http().get('/api').expect(200).expect('Hello World!');
     });
 
     it('GET /users without a token returns 401', () => {
-      return http().get('/users').expect(401);
+      return http().get('/api/users').expect(401);
     });
 
     it('register returns 201, a duplicate email returns 409', async () => {
@@ -144,7 +138,7 @@ describe('Auth & RBAC (e2e)', () => {
       await register(email).expect(201);
 
       await http()
-        .post('/auth/login')
+        .post('/api/auth/login')
         .send({ email, password: 'not-the-password' })
         .expect(401);
     });
@@ -154,13 +148,13 @@ describe('Auth & RBAC (e2e)', () => {
       await register(email).expect(201);
 
       const response = await http()
-        .post('/auth/login')
+        .post('/api/auth/login')
         .send({ email, password, globalRoles: [SystemRoles.PLATFORM_ADMIN] })
         .expect(200);
       const { accessToken } = response.body as { accessToken: string };
 
       await http()
-        .get('/users')
+        .get('/api/users')
         .set('Authorization', `Bearer ${accessToken}`)
         .expect(403);
     });
@@ -181,14 +175,14 @@ describe('Auth & RBAC (e2e)', () => {
       await register(email).expect(201);
       const { refreshToken } = await login(email);
 
-      await http().post('/auth/logout').send({ refreshToken }).expect(200);
+      await http().post('/api/auth/logout').send({ refreshToken }).expect(200);
 
       await refresh(refreshToken).expect(401);
     });
 
     it('logout with a garbage token returns 401, not 500', () => {
       return http()
-        .post('/auth/logout')
+        .post('/api/auth/logout')
         .send({ refreshToken: 'garbage' })
         .expect(401);
     });
@@ -199,7 +193,7 @@ describe('Auth & RBAC (e2e)', () => {
       const user = await createUser('regular');
 
       const me = await http()
-        .get('/users/me')
+        .get('/api/users/me')
         .set('Authorization', `Bearer ${user.token}`)
         .expect(200);
       expect(me.body).toEqual({
@@ -209,7 +203,7 @@ describe('Auth & RBAC (e2e)', () => {
         organizations: [],
       });
 
-      for (const path of ['/users', '/roles']) {
+      for (const path of ['/api/users', '/api/roles']) {
         await http()
           .get(path)
           .set('Authorization', `Bearer ${user.token}`)
@@ -222,7 +216,7 @@ describe('Auth & RBAC (e2e)', () => {
       await grantPlatformAdmin(admin.id);
 
       await http()
-        .get('/users')
+        .get('/api/users')
         .set('Authorization', `Bearer ${admin.token}`)
         .expect(200);
     });
@@ -232,11 +226,11 @@ describe('Auth & RBAC (e2e)', () => {
       const role = await grantPlatformAdmin(user.id);
       const auth = `Bearer ${user.token}`;
 
-      await http().get('/users').set('Authorization', auth).expect(200);
+      await http().get('/api/users').set('Authorization', auth).expect(200);
       await dataSource
         .getRepository(UserGlobalRoleEntity)
         .delete({ userId: user.id, roleId: role.id });
-      await http().get('/users').set('Authorization', auth).expect(403);
+      await http().get('/api/users').set('Authorization', auth).expect(403);
     });
 
     it('a deactivated user loses every permission with a still-valid token', async () => {
@@ -247,7 +241,7 @@ describe('Auth & RBAC (e2e)', () => {
         .update({ id: user.id }, { isActive: false });
 
       await http()
-        .get('/users')
+        .get('/api/users')
         .set('Authorization', `Bearer ${user.token}`)
         .expect(403);
     });
@@ -256,7 +250,7 @@ describe('Auth & RBAC (e2e)', () => {
       const user = await createUser('catalog');
 
       const response = await http()
-        .get('/permissions')
+        .get('/api/permissions')
         .set('Authorization', `Bearer ${user.token}`)
         .expect(200);
       expect(response.body).toContainEqual({
@@ -272,7 +266,7 @@ describe('Auth & RBAC (e2e)', () => {
       const auth = `Bearer ${admin.token}`;
 
       const created = await http()
-        .post('/roles')
+        .post('/api/roles')
         .set('Authorization', auth)
         .send({
           key: `support_${unique().replace(/\W/g, '_')}`,
@@ -288,7 +282,7 @@ describe('Auth & RBAC (e2e)', () => {
       });
 
       await http()
-        .patch(`/roles/${role.id}`)
+        .patch(`/api/roles/${role.id}`)
         .set('Authorization', auth)
         .send({
           permissions: [Permissions.USERS_READ, Permissions.USERS_MANAGE],
@@ -304,36 +298,36 @@ describe('Auth & RBAC (e2e)', () => {
       // Assigned roles cannot be deleted until unassigned.
       const support = await createUser('support');
       await http()
-        .put(`/users/${support.id}/roles`)
+        .put(`/api/users/${support.id}/roles`)
         .set('Authorization', auth)
         .send({ roleIds: [role.id] })
         .expect(200);
       await http()
-        .get('/users')
+        .get('/api/users')
         .set('Authorization', `Bearer ${support.token}`)
         .expect(200);
       await http()
-        .delete(`/roles/${role.id}`)
+        .delete(`/api/roles/${role.id}`)
         .set('Authorization', auth)
         .expect(409);
       await http()
-        .put(`/users/${support.id}/roles`)
+        .put(`/api/users/${support.id}/roles`)
         .set('Authorization', auth)
         .send({ roleIds: [] })
         .expect(200, []);
       await http()
-        .delete(`/roles/${role.id}`)
+        .delete(`/api/roles/${role.id}`)
         .set('Authorization', auth)
         .expect(204);
 
       const adminRole = await systemRole(SystemRoles.PLATFORM_ADMIN);
       await http()
-        .patch(`/roles/${adminRole.id}`)
+        .patch(`/api/roles/${adminRole.id}`)
         .set('Authorization', auth)
         .send({ name: 'Renamed' })
         .expect(403);
       await http()
-        .delete(`/roles/${adminRole.id}`)
+        .delete(`/api/roles/${adminRole.id}`)
         .set('Authorization', auth)
         .expect(403);
     });
@@ -343,7 +337,7 @@ describe('Auth & RBAC (e2e)', () => {
       await grantPlatformAdmin(admin.id);
 
       await http()
-        .post('/roles')
+        .post('/api/roles')
         .set('Authorization', `Bearer ${admin.token}`)
         .send({
           key: `bad_${unique().replace(/\W/g, '_')}`,
@@ -363,7 +357,7 @@ describe('Auth & RBAC (e2e)', () => {
     let otherManager: Awaited<ReturnType<typeof createUser>>;
 
     const orgPath = (organizationId: string, path = '') =>
-      `/organizations/${organizationId}${path}`;
+      `/api/organizations/${organizationId}${path}`;
 
     const createOrgRole = (
       token: string,
@@ -394,7 +388,7 @@ describe('Auth & RBAC (e2e)', () => {
 
     it('/users/me shows the caller’s roles per organization', async () => {
       const me = await http()
-        .get('/users/me')
+        .get('/api/users/me')
         .set('Authorization', `Bearer ${tenant.token}`)
         .expect(200);
       expect(me.body).toMatchObject({
@@ -410,7 +404,7 @@ describe('Auth & RBAC (e2e)', () => {
 
     it('org permissions apply only inside their own org', async () => {
       const inOrg = await http()
-        .get(`/users/me/permissions?organizationId=${org.id}`)
+        .get(`/api/users/me/permissions?organizationId=${org.id}`)
         .set('Authorization', `Bearer ${manager.token}`)
         .expect(200);
       expect((inOrg.body as { permissions: string[] }).permissions).toContain(
@@ -418,7 +412,7 @@ describe('Auth & RBAC (e2e)', () => {
       );
 
       const platformWide = await http()
-        .get('/users/me/permissions')
+        .get('/api/users/me/permissions')
         .set('Authorization', `Bearer ${manager.token}`)
         .expect(200);
       expect(platformWide.body).toEqual({
@@ -436,7 +430,7 @@ describe('Auth & RBAC (e2e)', () => {
         .expect(403);
       // The header no longer selects the org.
       await http()
-        .get('/roles')
+        .get('/api/roles')
         .set('Authorization', `Bearer ${manager.token}`)
         .set('x-organization-id', org.id)
         .expect(403);
@@ -467,7 +461,7 @@ describe('Auth & RBAC (e2e)', () => {
         .expect(200);
 
       const permissions = await http()
-        .get(`/users/me/permissions?organizationId=${org.id}`)
+        .get(`/api/users/me/permissions?organizationId=${org.id}`)
         .set('Authorization', `Bearer ${tenant.token}`)
         .expect(200);
       expect(

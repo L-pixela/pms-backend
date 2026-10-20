@@ -2,6 +2,7 @@ import { NestFactory } from '@nestjs/core';
 import { writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { AppModule } from '../app.module';
+import { configureApp } from '../config/app-setup';
 import { createOpenApiDocument } from '../config/swagger';
 
 /**
@@ -15,6 +16,7 @@ async function exportOpenApi() {
     preview: true,
     logger: false,
   });
+  configureApp(app);
   const document = createOpenApiDocument(app);
   writeFileSync(
     join(__dirname, '..', '..', 'openapi.json'),

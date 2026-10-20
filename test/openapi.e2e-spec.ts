@@ -2,6 +2,7 @@ import { INestApplication } from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';
 import type { OpenAPIObject } from '@nestjs/swagger';
 import { AppModule } from './../src/app.module';
+import { configureApp } from './../src/config/app-setup';
 import { createOpenApiDocument } from './../src/config/swagger';
 import { Permissions } from './../src/modules/shared/constants/permissions';
 
@@ -19,6 +20,7 @@ describe('OpenAPI document (e2e)', () => {
       preview: true,
       logger: false,
     });
+    configureApp(app);
     document = createOpenApiDocument(app);
   });
 
@@ -39,21 +41,21 @@ describe('OpenAPI document (e2e)', () => {
 
   it('documents every route', () => {
     const expected = [
-      '/',
-      '/auth/register',
-      '/auth/login',
-      '/auth/refresh',
-      '/auth/logout',
-      '/permissions',
-      '/roles',
-      '/roles/{roleId}',
-      '/organizations/{organizationId}/roles',
-      '/organizations/{organizationId}/roles/{roleId}',
-      '/users/me',
-      '/users/me/permissions',
-      '/users',
-      '/users/{userId}/roles',
-      '/organizations/{organizationId}/members/{userId}/roles',
+      '/api',
+      '/api/auth/register',
+      '/api/auth/login',
+      '/api/auth/refresh',
+      '/api/auth/logout',
+      '/api/permissions',
+      '/api/roles',
+      '/api/roles/{roleId}',
+      '/api/organizations/{organizationId}/roles',
+      '/api/organizations/{organizationId}/roles/{roleId}',
+      '/api/users/me',
+      '/api/users/me/permissions',
+      '/api/users',
+      '/api/users/{userId}/roles',
+      '/api/organizations/{organizationId}/members/{userId}/roles',
     ];
 
     expect(Object.keys(document.paths)).toEqual(
@@ -64,34 +66,36 @@ describe('OpenAPI document (e2e)', () => {
   it('requires the bearer token by default', () => {
     expect(document.security).toEqual([{ bearer: [] }]);
     expect(document.components?.securitySchemes).toHaveProperty('bearer');
-    expect(operation('/users/me', 'get')?.security).toBeUndefined();
+    expect(operation('/api/users/me', 'get')?.security).toBeUndefined();
   });
 
   it('marks @Public routes with an empty security requirement', () => {
     for (const [path, method] of [
-      ['/', 'get'],
-      ['/auth/login', 'post'],
-      ['/auth/register', 'post'],
+      ['/api', 'get'],
+      ['/api/auth/login', 'post'],
+      ['/api/auth/register', 'post'],
     ]) {
       expect(operation(path, method)?.security).toEqual([]);
     }
   });
 
   it('lists the permissions @RequirePermissions asks for', () => {
-    const list = operation('/roles', 'get');
+    const list = operation('/api/roles', 'get');
     expect(list?.['x-required-permissions']).toEqual([Permissions.ROLES_READ]);
     expect(list?.responses).toHaveProperty('403');
-    expect(operation('/roles', 'post')?.['x-required-permissions']).toContain(
-      Permissions.ROLES_MANAGE,
-    );
+    expect(
+      operation('/api/roles', 'post')?.['x-required-permissions'],
+    ).toContain(Permissions.ROLES_MANAGE);
   });
 
   it('adds the shared 401 and 400 responses only where they apply', () => {
-    expect(operation('/roles', 'get')?.responses).toHaveProperty('401');
-    expect(operation('/', 'get')?.responses).not.toHaveProperty('401');
-    expect(operation('/auth/login', 'post')?.responses).toHaveProperty('400');
-    expect(operation('/auth/register', 'post')?.responses).not.toHaveProperty(
-      '401',
+    expect(operation('/api/roles', 'get')?.responses).toHaveProperty('401');
+    expect(operation('/api', 'get')?.responses).not.toHaveProperty('401');
+    expect(operation('/api/auth/login', 'post')?.responses).toHaveProperty(
+      '400',
     );
+    expect(
+      operation('/api/auth/register', 'post')?.responses,
+    ).not.toHaveProperty('401');
   });
 });
