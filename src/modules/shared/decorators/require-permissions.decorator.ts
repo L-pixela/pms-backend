@@ -1,5 +1,7 @@
-import { SetMetadata } from '@nestjs/common';
+import { applyDecorators, SetMetadata } from '@nestjs/common';
+import { ApiExtension, ApiForbiddenResponse } from '@nestjs/swagger';
 import type { Permission } from '../constants/permissions';
+import { ErrorResponseDto } from '../dto/error-response.dto';
 
 export const REQUIRED_PERMISSIONS_KEY = 'requiredPermissions';
 
@@ -8,4 +10,11 @@ export const REQUIRED_PERMISSIONS_KEY = 'requiredPermissions';
  * `:organizationId` param they are checked in that organization.
  */
 export const RequirePermissions = (...permissions: Permission[]) =>
-  SetMetadata(REQUIRED_PERMISSIONS_KEY, permissions);
+  applyDecorators(
+    SetMetadata(REQUIRED_PERMISSIONS_KEY, permissions),
+    ApiExtension('x-required-permissions', permissions),
+    ApiForbiddenResponse({
+      description: `Missing permission: ${permissions.join(', ')}`,
+      type: ErrorResponseDto,
+    }),
+  );

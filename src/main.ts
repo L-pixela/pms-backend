@@ -2,6 +2,7 @@ import { ValidationPipe } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { NestFactory } from '@nestjs/core';
 import { AppModule } from './app.module';
+import { setupSwagger } from './config/swagger';
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
@@ -12,6 +13,10 @@ async function bootstrap() {
       forbidUnknownValues: true,
     }),
   );
-  await app.listen(app.get(ConfigService).getOrThrow<number>('PORT'));
+  const configService = app.get(ConfigService);
+  if (configService.getOrThrow<boolean>('SWAGGER_ENABLED')) {
+    setupSwagger(app);
+  }
+  await app.listen(configService.getOrThrow<number>('PORT'));
 }
 void bootstrap();
