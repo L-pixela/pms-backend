@@ -1,6 +1,7 @@
 import {
   Column,
   CreateDateColumn,
+  DeleteDateColumn,
   Entity,
   Index,
   PrimaryGeneratedColumn,
@@ -12,7 +13,11 @@ export class OrganizationEntity {
   @PrimaryGeneratedColumn('uuid')
   id: string;
 
-  @Index({ unique: true })
+  // Unique among live organizations only: a deleted org frees its slug.
+  @Index('UQ_organizations_slug_active', {
+    unique: true,
+    where: '"deleted_at" IS NULL',
+  })
   @Column({ type: 'varchar', length: 160 })
   slug: string;
 
@@ -24,4 +29,8 @@ export class OrganizationEntity {
 
   @UpdateDateColumn({ name: 'updated_at', type: 'timestamptz' })
   updatedAt: Date;
+
+  /** Soft delete marker: set means deleted, and repository finds skip the row. */
+  @DeleteDateColumn({ name: 'deleted_at', type: 'timestamptz' })
+  deletedAt: Date | null;
 }

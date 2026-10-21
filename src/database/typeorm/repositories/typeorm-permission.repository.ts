@@ -24,6 +24,8 @@ export class TypeOrmPermissionRepository implements IPermissionRepository {
          FROM users u
          JOIN organization_memberships m
            ON m.user_id = u.id AND m.organization_id = $2
+         JOIN organizations o
+           ON o.id = m.organization_id AND o.deleted_at IS NULL
          JOIN organization_membership_roles mr ON mr.membership_id = m.id
          JOIN roles r
            ON r.id = mr.role_id

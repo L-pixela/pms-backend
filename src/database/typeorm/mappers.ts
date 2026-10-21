@@ -41,6 +41,7 @@ export function toOrganization(entity: OrganizationEntity): Organization {
     name: entity.name,
     createdAt: entity.createdAt,
     updatedAt: entity.updatedAt,
+    deletedAt: entity.deletedAt,
   };
 }
 
