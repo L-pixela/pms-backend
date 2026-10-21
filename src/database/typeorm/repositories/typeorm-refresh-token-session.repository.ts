@@ -4,7 +4,7 @@ import { IsNull, Repository } from 'typeorm';
 import type {
   IRefreshTokenSessionRepository,
   NewRefreshTokenSession,
-} from '../../../auth/repositories/refresh-token-session.repository.interface';
+} from '../../../modules/auth/repositories/refresh-token-session.repository.interface';
 import { RefreshTokenSessionEntity } from '../entities/refresh-token-session.entity';
 
 @Injectable()

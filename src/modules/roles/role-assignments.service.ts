@@ -123,6 +123,34 @@ export class RoleAssignmentsService {
     return this.loadMembershipRoles(membership.id);
   }
 
+  /**
+   * Checks that `roleIds` can be given to a member of the organization (a
+   * platform template or one of its own roles) and that the caller holds every
+   * permission they carry.
+   */
+  async assertCanAssignMemberRoles(
+    callerId: string,
+    organizationId: string,
+    roleIds: string[],
+  ): Promise<void> {
+    await this.findAssignableRoles(roleIds, [
+      { organizationId: null, scope: RoleScope.ORGANIZATION },
+      { organizationId },
+    ]);
+    await this.assertCanChange(callerId, organizationId, roleIds);
+  }
+
+  /** Checks that the caller holds every permission of the member's current roles. */
+  async assertCanRevokeMemberRoles(
+    callerId: string,
+    organizationId: string,
+    membershipId: string,
+  ): Promise<void> {
+    const current =
+      await this.roleAssignmentRepository.listMembershipRoleIds(membershipId);
+    await this.assertCanChange(callerId, organizationId, current);
+  }
+
   /** The caller's global roles and their roles in each organization. */
   async describeUserRoles(userId: string): Promise<{
     globalRoles: RoleSummary[];

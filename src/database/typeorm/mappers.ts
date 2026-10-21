@@ -1,4 +1,4 @@
-import type { RefreshTokenSession } from '../../auth/domain/refresh-token-session';
+import type { RefreshTokenSession } from '../../modules/auth/domain/refresh-token-session';
 import type { OrganizationMembership } from '../../modules/organizations/domain/organization-membership';
 import type { Organization } from '../../modules/organizations/domain/organization';
 import type { Role } from '../../modules/shared/domain/role';
@@ -41,6 +41,7 @@ export function toOrganization(entity: OrganizationEntity): Organization {
     name: entity.name,
     createdAt: entity.createdAt,
     updatedAt: entity.updatedAt,
+    deletedAt: entity.deletedAt,
   };
 }
 

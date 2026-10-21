@@ -1,3 +1,4 @@
+import { ApiProperty } from '@nestjs/swagger';
 import {
   ArrayMaxSize,
   ArrayUnique,
@@ -20,6 +21,10 @@ export const ROLE_KEY_PATTERN = /^[a-z][a-z0-9_]{1,63}$/;
 
 /** A custom role inside one organization (always organization-scoped). */
 export class CreateRoleDto {
+  @ApiProperty({
+    pattern: ROLE_KEY_PATTERN.source,
+    example: 'maintenance_lead',
+  })
   @Matches(ROLE_KEY_PATTERN, {
     message:
       'key must be 2-64 characters of lowercase letters, digits or underscores, starting with a letter',

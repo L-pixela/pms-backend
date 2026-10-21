@@ -3,10 +3,11 @@ import { ConfigModule } from '@nestjs/config';
 import { APP_GUARD } from '@nestjs/core';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
-import { AuthModule } from './auth/auth.module';
-import { JwtAuthGuard } from './auth/guards/jwt-auth.guard';
+import { AuthModule } from './modules/auth/auth.module';
+import { JwtAuthGuard } from './modules/auth/guards/jwt-auth.guard';
 import { validate } from './config/env.validation';
 import { TypeOrmDatabaseModule } from './database/typeorm/typeorm-database.module';
+import { OrganizationsModule } from './modules/organizations/organizations.module';
 import { RolesModule } from './modules/roles/roles.module';
 import { PermissionsGuard } from './modules/shared/guards/permissions.guard';
 import { SharedModule } from './modules/shared/shared.module';
@@ -19,6 +20,7 @@ import { UsersModule } from './modules/users/users.module';
     SharedModule,
     AuthModule,
     RolesModule,
+    OrganizationsModule,
     UsersModule,
   ],
   controllers: [AppController],

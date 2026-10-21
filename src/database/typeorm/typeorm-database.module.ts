@@ -1,7 +1,7 @@
 import { Global, Module } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { TypeOrmModule } from '@nestjs/typeorm';
-import { REFRESH_TOKEN_SESSION_REPOSITORY } from '../../auth/repositories/refresh-token-session.repository.interface';
+import { REFRESH_TOKEN_SESSION_REPOSITORY } from '../../modules/auth/repositories/refresh-token-session.repository.interface';
 import { MEMBERSHIP_REPOSITORY } from '../../modules/organizations/repositories/membership.repository.interface';
 import { ORGANIZATION_REPOSITORY } from '../../modules/organizations/repositories/organization.repository.interface';
 import { ROLE_ASSIGNMENT_REPOSITORY } from '../../modules/roles/repositories/role-assignment.repository.interface';

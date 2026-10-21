@@ -1,6 +1,6 @@
 import type { CanActivate } from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
-import { createHttpContext } from '../../test-utils/http-context';
+import { createHttpContext } from '../../../test-utils/http-context';
 import { JwtAuthGuard } from './jwt-auth.guard';
 
 describe('JwtAuthGuard', () => {

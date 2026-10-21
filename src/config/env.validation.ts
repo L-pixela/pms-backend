@@ -1,6 +1,7 @@
 import 'reflect-metadata';
-import { plainToInstance } from 'class-transformer';
+import { plainToInstance, Transform } from 'class-transformer';
 import {
+  IsBoolean,
   IsEmail,
   IsIn,
   IsInt,
@@ -22,6 +23,14 @@ export class EnvironmentVariables {
   @IsInt()
   @Min(1)
   PORT: number = 3000;
+
+  // Implicit conversion would turn the string 'false' into true.
+  @Transform(({ obj }: { obj: Record<string, unknown> }) => {
+    const value = obj.SWAGGER_ENABLED;
+    return typeof value === 'string' ? value.toLowerCase() === 'true' : value;
+  })
+  @IsBoolean()
+  SWAGGER_ENABLED: boolean = false;
 
   @IsString()
   @IsNotEmpty()

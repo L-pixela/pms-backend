@@ -115,6 +115,8 @@ export class TypeOrmRoleAssignmentRepository implements IRoleAssignmentRepositor
   ): Promise<OrganizationRoles[]> {
     const rows = await this.membershipRepository
       .createQueryBuilder('membership')
+      // Soft-deleted organizations drop out of the caller's view.
+      .innerJoin('membership.organization', 'organization')
       .leftJoin(
         OrganizationMembershipRoleEntity,
         'membershipRole',
@@ -132,6 +134,7 @@ export class TypeOrmRoleAssignmentRepository implements IRoleAssignmentRepositor
       .addSelect('role.createdAt', 'createdAt')
       .addSelect('role.updatedAt', 'updatedAt')
       .where('membership.userId = :userId', { userId })
+      .andWhere('organization.deletedAt IS NULL')
       .orderBy('membership.createdAt')
       .addOrderBy('role.key')
       .getRawMany<OrganizationRoleRow>();

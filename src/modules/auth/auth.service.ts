@@ -8,12 +8,12 @@ import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
 import * as bcrypt from 'bcrypt';
 import { createHash, randomUUID } from 'node:crypto';
-import { DuplicateKeyError } from '../database/errors';
-import type { User } from '../modules/users/domain/user';
+import { DuplicateKeyError } from '../../database/errors';
+import type { User } from '../users/domain/user';
 import {
   USER_REPOSITORY,
   type IUserRepository,
-} from '../modules/users/repositories/user.repository.interface';
+} from '../users/repositories/user.repository.interface';
 import type { LoginDto } from './dto/login.dto';
 import type { RefreshTokenDto } from './dto/refresh-token.dto';
 import type { RegisterDto } from './dto/register.dto';
