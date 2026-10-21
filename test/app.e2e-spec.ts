@@ -76,8 +76,8 @@ describe('Auth & RBAC (e2e)', () => {
     return role;
   };
 
-  // There is no organizations API yet (Phase 3), so orgs and memberships are
-  // set up directly in the database.
+  // Orgs and memberships are set up directly in the database here
+  // (organizations.e2e-spec.ts covers the API).
   const createOrganization = async () => {
     const slug = `e2e-org-${unique()}`;
     return dataSource
